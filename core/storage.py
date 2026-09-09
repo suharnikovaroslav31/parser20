@@ -1,0 +1,207 @@
+"""
+Хранилище: PostgreSQL или локальный SQLite + Redis.
+
+Redis — дедуп и кэш floor-price. Если Redis не установлен,
+используется in-memory TTL, сервис не падает.
+SQLite включается через DATABASE_URL=sqlite+aiosqlite:///./data/tg_gifts.db
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Any, Optional
+
+from redis.asyncio import Redis
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from core.models import AnalyzedProfileRow, Base, GiftItemRow, ProfileSnapshot, ScanEventRow, utcnow
+
+LOGGER = logging.getLogger("tg_gifts.storage")
+
+
+class MemoryTTLCache:
+    """Запасной кэш, если Redis не поднят на машине разработчика."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, tuple[float, str]] = {}
+
+    def _purge(self) -> None:
+        now = time.monotonic()
+        dead = [key for key, (expires, _) in self._data.items() if expires <= now]
+        for key in dead:
+            self._data.pop(key, None)
+
+    async def get(self, key: str) -> Optional[str]:
+        self._purge()
+        item = self._data.get(key)
+        if item is None:
+            return None
+        expires, value = item
+        if expires <= time.monotonic():
+            self._data.pop(key, None)
+            return None
+        return value
+
+    async def set(self, key: str, value: str, ttl: int) -> None:
+        self._data[key] = (time.monotonic() + ttl, value)
+
+    async def exists(self, key: str) -> bool:
+        return await self.get(key) is not None
+
+
+class Storage:
+    """Фасад: Postgres для истории + Redis/память для дедупа."""
+
+    def __init__(self, database_url: str, redis_url: str) -> None:
+        self._database_url = database_url
+        self._redis_url = redis_url
+        engine_kwargs: dict[str, Any] = {"pool_pre_ping": True, "echo": False}
+        if database_url.startswith("sqlite"):
+            sqlite_path = database_url.split("///", 1)[-1]
+            if sqlite_path and not sqlite_path.startswith(":memory:"):
+                Path(sqlite_path).parent.mkdir(parents=True, exist_ok=True)
+            engine_kwargs["connect_args"] = {"check_same_thread": False}
+        else:
+            engine_kwargs["pool_size"] = 5
+            engine_kwargs["max_overflow"] = 10
+        self._engine = create_async_engine(database_url, **engine_kwargs)
+        self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False, class_=AsyncSession)
+        self._redis: Redis | None = None
+        self._memory = MemoryTTLCache()
+        self._redis_ok = False
+
+    async def start(self) -> None:
+        async with self._engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        try:
+            self._redis = Redis.from_url(self._redis_url, encoding="utf-8", decode_responses=True)
+            await self._redis.ping()
+            self._redis_ok = True
+            LOGGER.info("Redis подключён: %s", self._redis_url)
+        except Exception as exc:
+            self._redis_ok = False
+            LOGGER.warning("Redis недоступен (%s) — используем in-memory кэш", exc)
+
+    async def close(self) -> None:
+        if self._redis is not None:
+            await self._redis.aclose()
+        await self._engine.dispose()
+
+    async def cache_get(self, key: str) -> Optional[str]:
+        if self._redis_ok and self._redis is not None:
+            try:
+                return await self._redis.get(key)
+            except Exception as exc:
+                LOGGER.warning("Redis GET %s упал: %s", key, exc)
+                self._redis_ok = False
+        return await self._memory.get(key)
+
+    async def cache_set(self, key: str, value: str, ttl: int) -> None:
+        if self._redis_ok and self._redis is not None:
+            try:
+                await self._redis.set(key, value, ex=ttl)
+                return
+            except Exception as exc:
+                LOGGER.warning("Redis SET %s упал: %s", key, exc)
+                self._redis_ok = False
+        await self._memory.set(key, value, ttl)
+
+    async def cache_json_get(self, key: str) -> Optional[Any]:
+        raw = await self.cache_get(key)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+
+    async def cache_json_set(self, key: str, value: Any, ttl: int) -> None:
+        await self.cache_set(key, json.dumps(value, ensure_ascii=False, default=str), ttl)
+
+    async def already_alerted(self, user_id: int, fingerprint: str, ttl: int) -> bool:
+        """True, если такой же набор подарков уже отправляли в лог-группу."""
+        key = f"tg:alert:{user_id}:{fingerprint}"
+        if await self.cache_get(key):
+            return True
+        short = f"tg:alert:{user_id}"
+        stored = await self.cache_get(short)
+        return stored == fingerprint
+
+    async def mark_alerted(self, user_id: int, fingerprint: str, ttl: int) -> None:
+        await self.cache_set(f"tg:alert:{user_id}:{fingerprint}", "1", ttl)
+        await self.cache_set(f"tg:alert:{user_id}", fingerprint, ttl)
+
+    async def save_snapshot(self, snapshot: ProfileSnapshot, matched: bool) -> None:
+        metrics = snapshot.metrics
+        payload = {
+            "source": snapshot.source,
+            "cheap_slugs": [gift.slug for gift in snapshot.cheap_gifts],
+            "min_floor_ton": snapshot.min_floor_ton,
+            "activity_score": metrics.activity_score,
+        }
+        async with self._session_factory() as session:
+            row = await session.scalar(
+                select(AnalyzedProfileRow).where(AnalyzedProfileRow.user_id == metrics.user_id)
+            )
+            if row is None:
+                row = AnalyzedProfileRow(user_id=metrics.user_id)
+                session.add(row)
+            row.username = metrics.username
+            row.display_name = metrics.display_name
+            row.is_premium = metrics.is_premium
+            row.unique_gift_count = len(snapshot.unique_gifts)
+            row.total_gift_count = len(snapshot.unique_gifts) + len(snapshot.regular_gifts)
+            row.estimated_value_ton = snapshot.estimated_value_ton
+            row.estimated_value_usd = snapshot.estimated_value_usd
+            row.min_floor_ton = snapshot.min_floor_ton
+            row.activity_score = metrics.activity_score
+            row.approx_registered_at = metrics.approx_registered_at
+            row.matched = matched
+            row.fingerprint = snapshot.fingerprint
+            row.payload = payload
+            row.updated_at = utcnow()
+
+            for gift in snapshot.unique_gifts:
+                session.add(
+                    GiftItemRow(
+                        user_id=metrics.user_id,
+                        slug=gift.slug,
+                        title=gift.title,
+                        number=gift.number,
+                        gift_address=gift.gift_address,
+                        floor_ton=gift.best_floor_ton,
+                        floor_source=gift.market_source or "telegram",
+                        listed=gift.on_resale,
+                        raw={
+                            "model": gift.model,
+                            "backdrop": gift.backdrop,
+                            "symbol": gift.symbol,
+                            "fragment_url": gift.fragment_url,
+                        },
+                    )
+                )
+            await session.commit()
+
+    async def log_scan_event(
+        self,
+        source: str,
+        *,
+        seen: int,
+        matched: int,
+        error: str | None = None,
+    ) -> None:
+        async with self._session_factory() as session:
+            session.add(
+                ScanEventRow(
+                    source=source,
+                    profiles_seen=seen,
+                    profiles_matched=matched,
+                    error_text=error,
+                    finished_at=utcnow(),
+                )
+            )
+            await session.commit()

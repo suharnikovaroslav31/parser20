@@ -1,0 +1,17 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.session
+*.session-journal
+*.log
+.idea/
+.vscode/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+sessions/
+data/
+*.db
