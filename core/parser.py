@@ -32,7 +32,7 @@ from telethon.errors import (
 from telethon.sessions import StringSession
 from telethon.tl.functions.payments import GetSavedStarGiftsRequest
 from telethon.tl.functions.users import GetFullUserRequest
-from telethon.tl.types import Channel, StarGift, User
+from telethon.tl.types import Channel, InputPeerUser, InputUser, StarGift, User
 
 try:
     from telethon.tl.types import MessageActionStarGift
@@ -322,6 +322,28 @@ class ProfileScanner:
     # ------------------------------------------------------------------
     # Публичный профиль и подарки
     # ------------------------------------------------------------------
+    @staticmethod
+    def _access_hash(user: User) -> int:
+        return int(getattr(user, "access_hash", 0) or 0)
+
+    async def _input_user(self, user: User) -> Any:
+        access_hash = self._access_hash(user)
+        if access_hash:
+            return InputUser(user.id, access_hash)
+        return await self._flood.call(
+            lambda: self.client.get_input_entity(user),
+            label=f"input:{user.id}",
+        )
+
+    async def _input_peer(self, user: User) -> Any:
+        access_hash = self._access_hash(user)
+        if access_hash:
+            return InputPeerUser(user.id, access_hash)
+        return await self._flood.call(
+            lambda: self.client.get_input_entity(user),
+            label=f"peer:{user.id}",
+        )
+
     async def fetch_metrics(self, user: User) -> AccountMetrics:
         registered_at, age_days = account_age_days(user.id)
         bio = ""
@@ -330,11 +352,9 @@ class ProfileScanner:
         public_channels = 0
         stars_level: Optional[int] = None
         stars_value: Optional[int] = None
+        stars_fetched = False
         try:
-            input_user = await self._flood.call(
-                lambda: self.client.get_input_entity(user),
-                label=f"input:{user.id}",
-            )
+            input_user = await self._input_user(user)
             try:
                 request = GetFullUserRequest(id=input_user)
             except TypeError:
@@ -343,22 +363,25 @@ class ProfileScanner:
                 lambda: self.client(request),
                 label=f"full:{user.id}",
             )
-            full_user = getattr(full, "full_user", None)
-            if full_user is not None:
-                bio = getattr(full_user, "about", None) or ""
-                personal_channel_id = getattr(full_user, "personal_channel_id", None)
-                common_chats = int(getattr(full_user, "common_chats_count", 0) or 0)
-                rating = getattr(full_user, "stars_rating", None)
-                if rating is not None:
-                    stars_level = getattr(rating, "level", None)
-                    stars_value = getattr(rating, "stars", None)
-                    if stars_level is None:
-                        stars_level = getattr(rating, "current_level", None)
+            stars_fetched = True
+            full_user = getattr(full, "full_user", None) or full
+            bio = getattr(full_user, "about", None) or ""
+            personal_channel_id = getattr(full_user, "personal_channel_id", None)
+            common_chats = int(getattr(full_user, "common_chats_count", 0) or 0)
+            rating = getattr(full_user, "stars_rating", None) or getattr(full, "stars_rating", None)
+            if rating is not None:
+                stars_level = getattr(rating, "level", None)
+                stars_value = getattr(rating, "stars", None)
+                if stars_level is None:
+                    stars_level = getattr(rating, "current_level", None)
             for chat in getattr(full, "chats", []) or []:
                 if isinstance(chat, Channel) and getattr(chat, "username", None):
                     public_channels += 1
-        except (UserPrivacyRestrictedError, RPCError, asyncio.TimeoutError) as exc:
-            LOGGER.debug("GetFullUser %s: %s", user.id, exc)
+        except UserPrivacyRestrictedError as exc:
+            LOGGER.info("GetFullUser %s: %s", user.id, exc)
+            stars_fetched = True
+        except (RPCError, asyncio.TimeoutError) as exc:
+            LOGGER.info("GetFullUser %s: %s", user.id, exc)
 
         username = user.username
         is_premium = bool(getattr(user, "premium", False) or getattr(user, "is_premium", False))
@@ -373,6 +396,14 @@ class ProfileScanner:
             unique_gift_count=0,
             public_channel_count=public_channels,
         )
+        try:
+            parsed_level = int(stars_level) if stars_level is not None else None
+        except (TypeError, ValueError):
+            parsed_level = None
+        try:
+            parsed_stars = int(stars_value) if stars_value is not None else None
+        except (TypeError, ValueError):
+            parsed_stars = None
         return AccountMetrics(
             user_id=user.id,
             username=username,
@@ -388,8 +419,9 @@ class ProfileScanner:
             account_age_days=age_days,
             public_channel_count=public_channels,
             activity_score=score,
-            stars_rating_level=stars_level if isinstance(stars_level, int) else None,
-            stars_rating_stars=int(stars_value) if stars_value is not None else None,
+            stars_rating_level=parsed_level,
+            stars_rating_stars=parsed_stars,
+            stars_fetched=stars_fetched,
         )
 
     async def fetch_saved_gifts(
@@ -408,10 +440,7 @@ class ProfileScanner:
         offset = ""
         pages = 0
         max_pages = 2 if stop_after_unique is not None else 40
-        input_peer = await self._flood.call(
-            lambda: self.client.get_input_entity(user),
-            label=f"input:{user.id}",
-        )
+        input_peer = await self._input_peer(user)
         supported = inspect.signature(GetSavedStarGiftsRequest).parameters
         while pages < max_pages:
             pages += 1

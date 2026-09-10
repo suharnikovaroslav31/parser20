@@ -6,7 +6,8 @@ import unittest
 from types import SimpleNamespace
 
 from core.filters import ProfileFilter
-from core.market import listing_price_ton
+from core.listings import VERSION as TRACKER_VERSION, ListingTracker
+from core.market import listing_price_ton, profile_unique_gifts
 from core.models import AccountMetrics, ProfileSnapshot, UniqueGift
 from core.runtime import LiveFilters
 from core.ton_client import NANOTON
@@ -127,6 +128,25 @@ class FilterTests(unittest.TestCase):
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(account_age_days=400), price=2.0)
         decision = self.flt.evaluate(snap)
         self.assertFalse(decision.matched)
+
+
+class ProfileNftCountTests(unittest.TestCase):
+    def test_keeps_profile_without_listed_extra(self) -> None:
+        listed = _gift("C-3")
+        profile = [_gift("A-1"), _gift("B-2")]
+        merged = profile_unique_gifts(profile, listed)
+        self.assertEqual([gift.slug for gift in merged], ["A-1", "B-2"])
+
+    def test_empty_profile_uses_listed(self) -> None:
+        listed = _gift("A-1")
+        merged = profile_unique_gifts([], listed)
+        self.assertEqual([gift.slug for gift in merged], ["A-1"])
+
+
+class TrackerVersionTests(unittest.TestCase):
+    def test_tracker_version_bumped(self) -> None:
+        self.assertGreaterEqual(TRACKER_VERSION, 4)
+        self.assertTrue(callable(ListingTracker))
 
 
 class NanotonTests(unittest.TestCase):

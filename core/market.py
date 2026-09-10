@@ -39,6 +39,13 @@ def _peer_user_id(peer: Any) -> Optional[int]:
     return getattr(peer, "user_id", None)
 
 
+def profile_unique_gifts(profile_uniques: list[UniqueGift], listed: UniqueGift) -> list[UniqueGift]:
+    """Считать NFT профиля как есть. Пустой профиль — только выставленный лот."""
+    if profile_uniques:
+        return profile_uniques
+    return [listed]
+
+
 def listing_price_ton(
     gift: Any,
     *,
@@ -284,7 +291,8 @@ class GiftMarketScanner:
                     LOGGER.info("лот %s %s: %s", title, slug or extra, exc)
                     continue
                 if snapshot is not None:
-                    self.tracker.mark(key)
+                    if snapshot.metrics.stars_fetched:
+                        self.tracker.mark(key)
                     yield snapshot
             if stop_price:
                 return
@@ -324,10 +332,9 @@ class GiftMarketScanner:
             user = self._seller_from_users(owner_id, users)
             profile_uniques, regular = await self._load_profile_nfts(user, unique)
             metrics = await self._metrics_for_seller(user, owner_id, unique.seller_name)
-            if owner_id:
+            if owner_id and metrics.stars_fetched:
                 self._seller_cache[int(owner_id)] = (metrics, profile_uniques, regular)
-        if unique.slug and all(item.slug != unique.slug for item in profile_uniques):
-            profile_uniques = [*profile_uniques, unique]
+        profile_uniques = profile_unique_gifts(profile_uniques, unique)
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
             is_premium=metrics.is_premium,
@@ -356,6 +363,9 @@ class GiftMarketScanner:
         )
 
     async def _iter_mrkt_listings(self) -> AsyncIterator[ProfileSnapshot]:
+        if self.live.require_stars_rating:
+            LOGGER.info("MRKT: пропускаю — Stars-рейтинг читается только из Telegram resale")
+            return
         token = self.market.mrkt_token
         LOGGER.info("MRKT: %s", "токен из env" if token else "без токена")
         ton_usd = await self._ton_usd()
@@ -389,6 +399,9 @@ class GiftMarketScanner:
                 yield snapshot
 
     async def _iter_tonnel_listings(self) -> AsyncIterator[ProfileSnapshot]:
+        if self.live.require_stars_rating:
+            LOGGER.info("Tonnel: пропускаю — Stars-рейтинг читается только из Telegram resale")
+            return
         ton_usd = await self._ton_usd()
         try:
             items = await asyncio.wait_for(
@@ -476,6 +489,7 @@ class GiftMarketScanner:
         metrics = await self._metrics_for_seller(user, owner_id_int, unique.seller_name)
         inventory = await self._load_profile_nfts(user, unique)
         profile_uniques, regular = inventory
+        profile_uniques = profile_unique_gifts(profile_uniques, unique)
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
             is_premium=metrics.is_premium,
@@ -558,6 +572,7 @@ class GiftMarketScanner:
         metrics = await self._metrics_for_seller(user, owner_id_int, unique.seller_name)
         inventory = await self._load_profile_nfts(user, unique)
         profile_uniques, regular = inventory
+        profile_uniques = profile_unique_gifts(profile_uniques, unique)
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
             is_premium=metrics.is_premium,
@@ -650,4 +665,5 @@ class GiftMarketScanner:
             account_age_days=age_days,
             public_channel_count=0,
             activity_score=score,
+            stars_fetched=user is None,
         )
