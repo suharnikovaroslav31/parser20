@@ -3,10 +3,10 @@
 
 Цикл:
 1. Каталог коллекций `payments.getStarGifts`.
-2. По каждой коллекции с ресейлом — `payments.getResaleStarGifts` (цена по возрастанию).
-   Как только лот дороже порога — коллекцию бросаем (сортировка ASC).
-3. Авторизация MRKT через Mini App `@mrkt` и выгрузка лотов `/gifts/saling`.
-4. По дешёвому лоту собираем карточку продавца (если Telegram отдал User).
+2. По каждой коллекции — свежие лоты `getResaleStarGifts` (без сортировки по цене:
+   Telegram отдаёт только что выставленные). Старые лоты не перебираем.
+3. MRKT: `/gifts/saling` по дате выставления.
+4. По новому лоту в ценовом фильтре собираем карточку продавца.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from telethon.tl.types import InputBotAppShortName, InputUser, PeerUser, User
 
 from config import Settings
 from core.filters import account_age_days, compute_activity_score
+from core.listings import ListingTracker
 from core.models import AccountMetrics, ProfileSnapshot, UniqueGift, utcnow
 from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
@@ -78,28 +79,50 @@ class GiftMarketScanner:
         self.settings = settings
         self.live = live
         self.stop_event = None
+        self.tracker = ListingTracker()
+        self._skipped_known = 0
 
     def _stopping(self) -> bool:
         return self.stop_event is not None and self.stop_event.is_set()
 
-    async def iter_offers(self) -> AsyncIterator[ProfileSnapshot]:
-        telegram_count = 0
-        async for snapshot in self._iter_telegram_resale():
-            if self._stopping():
-                return
-            telegram_count += 1
-            yield snapshot
-        if self._stopping():
-            return
-        LOGGER.info("Telegram Gift Market: дешёвых лотов в проходе %s", telegram_count)
+    def _lot_key(self, source: str, slug: str, extra: str = "") -> str:
+        token = (slug or extra or "").strip()
+        return f"{source}:{token}" if token else ""
 
-        mrkt_count = 0
-        async for snapshot in self._iter_mrkt_listings():
+    async def iter_offers(self) -> AsyncIterator[ProfileSnapshot]:
+        if self.tracker.warming_up:
+            LOGGER.info("Прогрев: запоминаю текущие лоты, алерты только на новые выставления")
+        telegram_count = 0
+        self._skipped_known = 0
+        finished = False
+        try:
+            async for snapshot in self._iter_telegram_resale():
+                if self._stopping():
+                    return
+                telegram_count += 1
+                yield snapshot
             if self._stopping():
                 return
-            mrkt_count += 1
-            yield snapshot
-        LOGGER.info("MRKT: дешёвых лотов в проходе %s", mrkt_count)
+            LOGGER.info(
+                "Telegram: новых лотов %s, уже виденных пропущено %s",
+                telegram_count,
+                self._skipped_known,
+            )
+
+            mrkt_count = 0
+            async for snapshot in self._iter_mrkt_listings():
+                if self._stopping():
+                    return
+                mrkt_count += 1
+                yield snapshot
+            LOGGER.info("MRKT: новых лотов %s", mrkt_count)
+            self.tracker.commit_scan()
+            finished = True
+        except Exception:
+            raise
+        finally:
+            if not finished:
+                self.tracker.discard_partial()
 
     async def _iter_telegram_resale(self) -> AsyncIterator[ProfileSnapshot]:
         catalog = await self._gift_catalog()
@@ -112,7 +135,6 @@ class GiftMarketScanner:
         ]
         LOGGER.info("Каталог Telegram Gifts: %s типов, к ресейлу %s", len(catalog), len(resale_types))
         ton_usd = await self.market.get_ton_usd()
-        threshold = self.live.floor_max_ton
 
         for index, base in enumerate(resale_types, start=1):
             if self._stopping():
@@ -124,7 +146,7 @@ class GiftMarketScanner:
             if index == 1 or index % 25 == 0:
                 LOGGER.info("Telegram market %s/%s: %s", index, len(resale_types), title)
             try:
-                async for snapshot in self._resale_pages(gift_id, title, ton_usd, threshold):
+                async for snapshot in self._resale_newest(gift_id, title, ton_usd):
                     yield snapshot
             except RPCError as exc:
                 LOGGER.debug("resale %s (%s): %s", title, gift_id, exc)
@@ -141,62 +163,50 @@ class GiftMarketScanner:
         gifts = getattr(result, "gifts", None) or []
         return list(gifts)
 
-    async def _resale_pages(
+    async def _resale_newest(
         self,
         gift_id: int,
         title: str,
         ton_usd: float,
-        threshold: float,
     ) -> AsyncIterator[ProfileSnapshot]:
-        offset = ""
-        pages = 0
-        while pages < 8:
+        """Первая страница ресейла без sort_by_price = только что выставленные."""
+        result = await self.scanner._flood.call(
+            lambda: self.scanner.client(
+                GetResaleStarGiftsRequest(
+                    gift_id=gift_id,
+                    offset="",
+                    limit=min(50, self.settings.gift_page_size),
+                )
+            ),
+            label=f"resale:{gift_id}",
+        )
+        users = {
+            user.id: user
+            for user in (getattr(result, "users", None) or [])
+            if isinstance(user, User)
+        }
+        gifts = getattr(result, "gifts", None) or []
+        for raw in gifts:
             if self._stopping():
                 return
-            pages += 1
-            result = await self.scanner._flood.call(
-                lambda off=offset: self.scanner.client(
-                    GetResaleStarGiftsRequest(
-                        gift_id=gift_id,
-                        offset=off,
-                        limit=min(50, self.settings.gift_page_size),
-                        sort_by_price=True,
-                    )
-                ),
-                label=f"resale:{gift_id}",
+            price = listing_price_ton(
+                raw,
+                ton_usd=ton_usd,
+                stars_usd=self.settings.stars_usd,
             )
-            users = {
-                user.id: user
-                for user in (getattr(result, "users", None) or [])
-                if isinstance(user, User)
-            }
-            gifts = getattr(result, "gifts", None) or []
-            if not gifts:
-                break
-            stop_collection = False
-            for raw in gifts:
-                price = listing_price_ton(
-                    raw,
-                    ton_usd=ton_usd,
-                    stars_usd=self.settings.stars_usd,
-                )
-                if price is None:
-                    continue
-                if price < self.live.floor_min_ton:
-                    continue
-                if price >= threshold:
-                    # Дальше в этой коллекции только дороже — выходим.
-                    stop_collection = True
-                    break
-                snapshot = await self._snapshot_from_telegram_lot(raw, users, price, ton_usd)
-                if snapshot is not None:
-                    yield snapshot
-            if stop_collection:
-                break
-            next_offset = getattr(result, "next_offset", None)
-            if not next_offset:
-                break
-            offset = next_offset
+            if price is None:
+                continue
+            if price < self.live.floor_min_ton or price >= self.live.floor_max_ton:
+                continue
+            slug = str(getattr(raw, "slug", "") or "")
+            extra = f"{gift_id}:{getattr(raw, 'num', '')}:{getattr(raw, 'id', '')}"
+            key = self._lot_key("tg", slug, extra)
+            if not self.tracker.observe(key):
+                self._skipped_known += 1
+                continue
+            snapshot = await self._snapshot_from_telegram_lot(raw, users, price, ton_usd)
+            if snapshot is not None:
+                yield snapshot
 
     async def _snapshot_from_telegram_lot(
         self,
@@ -308,12 +318,20 @@ class GiftMarketScanner:
             LOGGER.warning("MRKT пропущен: нет токена (откройте @mrkt app один раз в Telegram, если ошибка повторяется)")
             return
         ton_usd = await self.market.get_ton_usd()
-        threshold = self.live.floor_max_ton
-        cheap = await self.market.list_cheap_gifts(threshold, max_pages=15)
-        LOGGER.info("MRKT: лотов ниже %s TON: %s", threshold, len(cheap))
+        cheap = await self.market.list_recent_gifts(
+            self.live.floor_max_ton,
+            min_ton=self.live.floor_min_ton,
+            max_pages=8,
+        )
+        LOGGER.info("MRKT: свежих лотов в диапазоне цены: %s", len(cheap))
         for item in cheap:
             if self._stopping():
                 return
+            slug = str(item.get("slug") or item.get("gift_id_string") or "")
+            extra = str(item.get("id") or item.get("gift_id") or "")
+            key = self._lot_key("mrkt", slug, extra)
+            if not self.tracker.observe(key):
+                continue
             snapshot = await self._snapshot_from_mrkt(item, ton_usd)
             if snapshot is not None:
                 yield snapshot

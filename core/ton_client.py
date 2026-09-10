@@ -467,6 +467,85 @@ class TonMarketClient:
         cached = await self._cached(cache_key, self.settings.floor_cache_ttl_sec, _load)
         return to_ton(cached)
 
+    async def list_recent_gifts(
+        self,
+        max_ton: float,
+        *,
+        min_ton: float = 0.0,
+        max_pages: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Свежие лоты MRKT (новые выставления), затем фильтр по цене."""
+        if not self.mrkt_token:
+            return []
+        found: list[dict[str, Any]] = []
+        cursor = ""
+        ordering = "Date"
+        for page in range(max_pages):
+            body = {
+                "collectionNames": [],
+                "modelNames": [],
+                "backdropNames": [],
+                "symbolNames": [],
+                "ordering": ordering,
+                "lowToHigh": False,
+                "maxPrice": None,
+                "minPrice": None,
+                "count": 20,
+                "cursor": cursor,
+                "query": None,
+                "promotedFirst": False,
+            }
+            try:
+                payload = await self.http.request_json(
+                    "POST",
+                    f"{self.settings.mrkt_api_url.rstrip('/')}/gifts/saling",
+                    headers=self._mrkt_headers(),
+                    json_body=body,
+                )
+            except Exception as exc:
+                LOGGER.warning("MRKT recent /gifts/saling (%s): %s", ordering, exc)
+                if page == 0 and ordering == "Date":
+                    ordering = "Latest"
+                    continue
+                break
+            gifts: list[Any] = []
+            next_cursor = ""
+            if isinstance(payload, dict):
+                gifts = payload.get("gifts") or payload.get("items") or []
+                next_cursor = str(payload.get("cursor") or "")
+            elif isinstance(payload, list):
+                gifts = payload
+            if not gifts:
+                if page == 0 and ordering == "Date":
+                    ordering = "Latest"
+                    cursor = ""
+                    continue
+                break
+            stop_old = False
+            for gift in gifts:
+                if not isinstance(gift, dict):
+                    continue
+                price = to_ton(
+                    gift.get("sale_price")
+                    or gift.get("salePrice")
+                    or gift.get("price")
+                    or gift.get("sale_price_ton")
+                    or gift.get("sale_price_nano_tons")
+                )
+                if price is None:
+                    continue
+                if price < min_ton or price >= max_ton:
+                    continue
+                found.append(gift)
+            if not next_cursor or next_cursor == cursor:
+                break
+            cursor = next_cursor
+            if page >= 2 and len(found) == 0:
+                stop_old = True
+            if stop_old:
+                break
+        return found
+
     async def list_cheap_gifts(self, max_ton: float, *, max_pages: int = 10) -> list[dict[str, Any]]:
         """Все активные лоты MRKT дешевле порога, цена по возрастанию."""
         if not self.mrkt_token:
