@@ -14,7 +14,6 @@ import warnings
 from typing import Optional
 
 from config import Settings, get_settings
-from bot.admin import ADMIN_ID
 from bot.app import build_bot, build_dispatcher
 from bot.claims import ClaimStore
 from bot.logger import GiftLogger
@@ -109,14 +108,6 @@ class AnalyticsApp:
             self.live.floor_min_ton,
             self.live.floor_max_ton,
         )
-        try:
-            await self.bot.send_message(
-                ADMIN_ID,
-                "Сканер запущен. /admin — панель фильтров.",
-                disable_web_page_preview=True,
-            )
-        except Exception as exc:
-            LOGGER.info("Не отправил старт админу (напишите боту /start): %s", exc)
 
     async def close(self) -> None:
         LOGGER.info("Закрываю соединения...")
