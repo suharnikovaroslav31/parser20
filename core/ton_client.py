@@ -476,8 +476,6 @@ class TonMarketClient:
         max_pages: int = 8,
     ) -> list[dict[str, Any]]:
         """Свежие лоты MRKT (новые выставления), затем фильтр по цене."""
-        if not self.mrkt_token:
-            return []
         found: list[dict[str, Any]] = []
         cursor = ""
         ordering = "Date"
@@ -653,8 +651,6 @@ class TonMarketClient:
 
     async def list_cheap_gifts(self, max_ton: float, *, max_pages: int = 10) -> list[dict[str, Any]]:
         """Все активные лоты MRKT дешевле порога, цена по возрастанию."""
-        if not self.mrkt_token:
-            return []
         nano = int(max_ton * NANOTON)
         cursor = ""
         found: list[dict[str, Any]] = []

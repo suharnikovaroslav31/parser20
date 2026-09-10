@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -115,9 +116,24 @@ def compute_activity_score(
 class ProfileFilter:
     def __init__(self, live: LiveFilters) -> None:
         self.live = live
+        self.skip_counts: dict[str, int] = defaultdict(int)
+        self.checked = 0
+        self.matched = 0
+
+    def reset_stats(self) -> None:
+        self.skip_counts = defaultdict(int)
+        self.checked = 0
+        self.matched = 0
+
+    def dump_stats(self) -> str:
+        parts = [f"проверено {self.checked}", f"MATCH {self.matched}"]
+        for key, value in sorted(self.skip_counts.items(), key=lambda item: -item[1]):
+            parts.append(f"{key}={value}")
+        return ", ".join(parts)
 
     def evaluate(self, snapshot: ProfileSnapshot) -> FilterDecision:
         live = self.live
+        self.checked += 1
         reasons: list[str] = []
         metrics = snapshot.metrics
         unique_count = len(snapshot.unique_gifts)
@@ -161,12 +177,16 @@ class ProfileFilter:
 
         matched = not reasons
         if matched:
+            self.matched += 1
             reasons.append(
                 f"OK: рейтинг ур.{level}, {unique_count} NFT, лот {price:g} TON, акк ~{metrics.account_age_days}д"
             )
             LOGGER.info("MATCH user=%s %s", metrics.user_id, reasons[-1])
         else:
-            LOGGER.debug("SKIP user=%s %s", metrics.user_id, reasons)
+            bucket = reasons[0].split(":")[0][:40] if reasons else "skip"
+            self.skip_counts[bucket] += 1
+            if self.skip_counts[bucket] <= 5:
+                LOGGER.info("SKIP user=%s %s", metrics.user_id, "; ".join(reasons))
 
         return FilterDecision(
             matched=matched,

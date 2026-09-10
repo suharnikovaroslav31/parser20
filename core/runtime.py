@@ -58,13 +58,8 @@ class LiveFilters:
         )
         if path.exists():
             live.load()
-        live.max_unique_gifts = min(2, max(1, int(live.max_unique_gifts or 2)))
-        live.stars_rating_min = 1
-        live.stars_rating_max = 1
-        live.require_stars_rating = True
-        live.filter_seller_age = True
-        live.max_account_age_days = min(90, int(live.max_account_age_days or 90))
-        live.save()
+        else:
+            live.save()
         return live
 
     @property

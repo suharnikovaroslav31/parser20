@@ -318,6 +318,8 @@ class ProfileScanner:
                 if rating is not None:
                     stars_level = getattr(rating, "level", None)
                     stars_value = getattr(rating, "stars", None)
+                    if stars_level is None:
+                        stars_level = getattr(rating, "current_level", None)
             for chat in getattr(full, "chats", []) or []:
                 if isinstance(chat, Channel) and getattr(chat, "username", None):
                     public_channels += 1

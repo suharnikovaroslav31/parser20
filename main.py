@@ -168,6 +168,7 @@ class AnalyticsApp:
                     continue
                 continue
             LOGGER.info("Старт прохода Telegram Gift Market + MRKT")
+            self.filters.reset_stats()
             try:
                 async for snapshot in self.markets.iter_offers():
                     if self._stop.is_set() or not self.live.scanner_enabled:
@@ -177,6 +178,7 @@ class AnalyticsApp:
                 raise
             except Exception:
                 LOGGER.exception("Ошибка прохода по маркету")
+            LOGGER.info("Фильтры за проход: %s", self.filters.dump_stats())
             LOGGER.info("Проход: seen=%s matched=%s", self._seen, self._matched)
             if not live or self._stop.is_set():
                 break
