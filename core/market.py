@@ -25,8 +25,10 @@ from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
-CHEAP_PAGES = 4
-NEW_PAGES = 1
+CHEAP_PAGES = 8
+NEW_PAGES = 2
+MRKT_LIMIT = 120
+TONNEL_LIMIT = 120
 
 
 def _peer_user_id(peer: Any) -> Optional[int]:
@@ -363,9 +365,6 @@ class GiftMarketScanner:
         )
 
     async def _iter_mrkt_listings(self) -> AsyncIterator[ProfileSnapshot]:
-        if self.live.require_stars_rating:
-            LOGGER.info("MRKT: пропускаю — Stars-рейтинг читается только из Telegram resale")
-            return
         token = self.market.mrkt_token
         LOGGER.info("MRKT: %s", "токен из env" if token else "без токена")
         ton_usd = await self._ton_usd()
@@ -374,18 +373,18 @@ class GiftMarketScanner:
                 self.market.list_mrkt_targets(
                     self.live.floor_max_ton,
                     min_ton=self.live.floor_min_ton,
-                    max_pages=2,
+                    max_pages=4,
                 ),
-                timeout=20,
+                timeout=35,
             )
         except asyncio.TimeoutError:
-            LOGGER.warning("MRKT HTTP timeout 20s — дальше Telegram")
+            LOGGER.warning("MRKT HTTP timeout 35s — дальше Telegram")
             cheap = []
         except Exception as exc:
             LOGGER.warning("MRKT HTTP: %s — дальше Telegram", exc)
             cheap = []
         LOGGER.info("MRKT: лотов с маркета %s", len(cheap))
-        for item in cheap[:40]:
+        for item in cheap[:MRKT_LIMIT]:
             if self._stopping():
                 return
             slug = str(item.get("slug") or item.get("gift_id_string") or "")
@@ -399,27 +398,24 @@ class GiftMarketScanner:
                 yield snapshot
 
     async def _iter_tonnel_listings(self) -> AsyncIterator[ProfileSnapshot]:
-        if self.live.require_stars_rating:
-            LOGGER.info("Tonnel: пропускаю — Stars-рейтинг читается только из Telegram resale")
-            return
         ton_usd = await self._ton_usd()
         try:
             items = await asyncio.wait_for(
                 self.market.list_tonnel_gifts(
                     self.live.floor_max_ton,
                     min_ton=self.live.floor_min_ton,
-                    max_pages=2,
+                    max_pages=4,
                 ),
-                timeout=20,
+                timeout=35,
             )
         except asyncio.TimeoutError:
-            LOGGER.warning("Tonnel HTTP timeout 20s")
+            LOGGER.warning("Tonnel HTTP timeout 35s")
             items = []
         except Exception as exc:
             LOGGER.warning("Tonnel HTTP: %s", exc)
             items = []
         LOGGER.info("Tonnel: кандидатов (новые+дешёвые): %s", len(items))
-        for item in items[:40]:
+        for item in items[:TONNEL_LIMIT]:
             if self._stopping():
                 return
             slug = str(item.get("slug") or "")

@@ -130,6 +130,83 @@ class FilterTests(unittest.TestCase):
         self.assertFalse(decision.matched)
 
 
+class LooseFilterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.live = LiveFilters(
+            scanner_enabled=True,
+            floor_min_ton=0.0,
+            floor_max_ton=15.0,
+            min_unique_gifts=1,
+            max_unique_gifts=5,
+            stars_rating_min=0,
+            stars_rating_max=2,
+            require_stars_rating=False,
+            max_account_age_days=365,
+            filter_seller_age=True,
+            min_activity_score=0,
+        )
+        self.flt = ProfileFilter(self.live)
+
+    def test_match_without_stars_rating(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(stars_rating_level=None), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+    def test_match_rating_two(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(stars_rating_level=2), price=4.0)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+    def test_match_five_nfts(self) -> None:
+        gifts = [_gift(f"G-{i}") for i in range(5)]
+        snap = _snapshot(gifts=gifts, metrics=_metrics(), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+    def test_skip_high_rating(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(stars_rating_level=5), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+
+    def test_match_year_old_account(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(account_age_days=300), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+
+class FilterSchemaTests(unittest.TestCase):
+    def test_old_filters_json_is_widened(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "filters.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "floor_max_ton": 10.0,
+                        "max_unique_gifts": 2,
+                        "stars_rating_min": 1,
+                        "stars_rating_max": 1,
+                        "require_stars_rating": True,
+                        "max_account_age_days": 90,
+                        "alert_cooldown_hours": 24,
+                        "schema_version": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            live = LiveFilters(path=path)
+            live.load()
+            self.assertFalse(live.require_stars_rating)
+            self.assertEqual(live.max_unique_gifts, 5)
+            self.assertEqual(live.stars_rating_max, 2)
+            self.assertEqual(live.max_account_age_days, 365)
+            self.assertEqual(live.floor_max_ton, 15.0)
+            self.assertGreaterEqual(live.schema_version, 2)
+
+
 class ProfileNftCountTests(unittest.TestCase):
     def test_keeps_profile_without_listed_extra(self) -> None:
         listed = _gift("C-3")
@@ -145,7 +222,7 @@ class ProfileNftCountTests(unittest.TestCase):
 
 class TrackerVersionTests(unittest.TestCase):
     def test_tracker_version_bumped(self) -> None:
-        self.assertGreaterEqual(TRACKER_VERSION, 4)
+        self.assertGreaterEqual(TRACKER_VERSION, 5)
         self.assertTrue(callable(ListingTracker))
 
 
