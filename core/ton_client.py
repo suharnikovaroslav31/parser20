@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Optional
@@ -545,6 +546,110 @@ class TonMarketClient:
             if stop_old:
                 break
         return found
+
+    async def list_mrkt_targets(
+        self,
+        max_ton: float,
+        *,
+        min_ton: float = 0.0,
+        max_pages: int = 10,
+    ) -> list[dict[str, Any]]:
+        """MRKT: свежие выставления + самые дешёвые, без дублей."""
+        recent = await self.list_recent_gifts(max_ton, min_ton=min_ton, max_pages=max_pages)
+        cheap = await self.list_cheap_gifts(max_ton, max_pages=max_pages)
+        merged: dict[str, dict[str, Any]] = {}
+        for gift in recent + cheap:
+            if not isinstance(gift, dict):
+                continue
+            price = to_ton(
+                gift.get("sale_price")
+                or gift.get("salePrice")
+                or gift.get("price")
+                or gift.get("sale_price_ton")
+                or gift.get("sale_price_nano_tons")
+            )
+            if price is None or price < min_ton or price >= max_ton:
+                continue
+            key = str(
+                gift.get("slug")
+                or gift.get("gift_id_string")
+                or gift.get("id")
+                or gift.get("gift_id")
+                or ""
+            )
+            if not key:
+                continue
+            prev = merged.get(key)
+            if prev is None or (to_ton(prev.get("sale_price") or prev.get("price")) or 1e9) > price:
+                merged[key] = gift
+        return list(merged.values())
+
+    async def list_tonnel_gifts(
+        self,
+        max_ton: float,
+        *,
+        min_ton: float = 0.0,
+        max_pages: int = 4,
+    ) -> list[dict[str, Any]]:
+        """Tonnel (жёлтый маркет): новые и самые дешёвые лоты."""
+        base = self.settings.tonnel_api_url.rstrip("/")
+        headers = {
+            "Origin": "https://market.tonnel.network",
+            "Referer": "https://market.tonnel.network/",
+            "Accept": "application/json",
+        }
+        common_filter = {
+            "price": {"$exists": True},
+            "refunded": {"$ne": True},
+            "buyer": {"$exists": False},
+            "asset": "TON",
+        }
+        sorts = (
+            {"message_post_time": -1, "gift_id": -1},
+            {"price": 1, "gift_id": -1},
+        )
+        merged: dict[str, dict[str, Any]] = {}
+        for sort in sorts:
+            for page in range(1, max_pages + 1):
+                body = {
+                    "page": page,
+                    "limit": 30,
+                    "sort": json.dumps(sort),
+                    "filter": json.dumps(common_filter),
+                    "price_range": f"{min_ton}-{max_ton}",
+                    "user_auth": "",
+                }
+                try:
+                    payload = await self.http.request_json(
+                        "POST",
+                        f"{base}/api/pageGifts",
+                        headers=headers,
+                        json_body=body,
+                    )
+                except Exception as exc:
+                    LOGGER.warning("Tonnel pageGifts: %s", exc)
+                    return list(merged.values())
+                gifts: list[Any] = []
+                if isinstance(payload, list):
+                    gifts = payload
+                elif isinstance(payload, dict):
+                    gifts = payload.get("gifts") or payload.get("data") or payload.get("items") or []
+                if not gifts:
+                    break
+                for gift in gifts:
+                    if not isinstance(gift, dict):
+                        continue
+                    price = to_ton(gift.get("price") or gift.get("sale_price") or gift.get("ton_price"))
+                    if price is None or price < min_ton or price >= max_ton:
+                        continue
+                    name = str(gift.get("name") or gift.get("gift_name") or "")
+                    num = gift.get("gift_num") or gift.get("number")
+                    key = str(gift.get("gift_id") or gift.get("id") or f"{name}-{num}")
+                    prev = merged.get(key)
+                    if prev is None or (to_ton(prev.get("price")) or 1e9) > price:
+                        merged[key] = gift
+        LOGGER.info("Tonnel: уникальных лотов в диапазоне %s", len(merged))
+        return list(merged.values())
 
     async def list_cheap_gifts(self, max_ton: float, *, max_pages: int = 10) -> list[dict[str, Any]]:
         """Все активные лоты MRKT дешевле порога, цена по возрастанию."""

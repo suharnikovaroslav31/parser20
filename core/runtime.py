@@ -23,14 +23,14 @@ class LiveFilters:
     floor_min_ton: float = 0.0
     floor_max_ton: float = 10.0
     min_unique_gifts: int = 1
-    max_unique_gifts: int = 3
+    max_unique_gifts: int = 2
     stars_rating_min: int = 1
     stars_rating_max: int = 1
     require_stars_rating: bool = True
-    max_account_age_days: Optional[int] = None
+    max_account_age_days: Optional[int] = 90
     require_premium: Optional[bool] = None
     min_activity_score: int = 0
-    filter_seller_age: bool = False
+    filter_seller_age: bool = True
     alert_cooldown_hours: int = 24
     market_poll_sec: int = 45
     community_url: str = "https://t.me/BYRMALDAEVO"
@@ -43,14 +43,14 @@ class LiveFilters:
             floor_min_ton=0.0,
             floor_max_ton=float(settings.floor_threshold_ton),
             min_unique_gifts=int(settings.min_unique_gifts),
-            max_unique_gifts=int(settings.max_unique_gifts),
+            max_unique_gifts=min(2, int(settings.max_unique_gifts)),
             stars_rating_min=1,
             stars_rating_max=1,
             require_stars_rating=True,
-            max_account_age_days=None,
+            max_account_age_days=90,
             require_premium=settings.require_premium,
             min_activity_score=int(settings.min_activity_score),
-            filter_seller_age=False,
+            filter_seller_age=True,
             alert_cooldown_hours=int(settings.alert_cooldown_hours),
             market_poll_sec=int(settings.market_poll_sec),
             community_url=getattr(settings, "community_chat_url", None) or "https://t.me/BYRMALDAEVO",
@@ -58,8 +58,13 @@ class LiveFilters:
         )
         if path.exists():
             live.load()
-        else:
-            live.save()
+        live.max_unique_gifts = min(2, max(1, int(live.max_unique_gifts or 2)))
+        live.stars_rating_min = 1
+        live.stars_rating_max = 1
+        live.require_stars_rating = True
+        live.filter_seller_age = True
+        live.max_account_age_days = min(90, int(live.max_account_age_days or 90))
+        live.save()
         return live
 
     @property

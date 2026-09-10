@@ -146,8 +146,10 @@ class ProfileFilter:
                     f"рейтинг ур.{level} вне {live.stars_rating_min}–{live.stars_rating_max}"
                 )
 
-        if live.filter_seller_age and live.max_account_age_days and metrics.account_age_days is not None:
-            if metrics.account_age_days > live.max_account_age_days:
+        if live.filter_seller_age and live.max_account_age_days:
+            if metrics.account_age_days is None:
+                reasons.append("возраст аккаунта неизвестен")
+            elif metrics.account_age_days > live.max_account_age_days:
                 reasons.append(f"возраст {metrics.account_age_days}д > {live.max_account_age_days}д")
 
         if live.require_premium is not None and metrics.is_premium != live.require_premium:
@@ -160,7 +162,7 @@ class ProfileFilter:
         matched = not reasons
         if matched:
             reasons.append(
-                f"OK: рейтинг ур.{level}, {unique_count} NFT, лот {price:g} TON"
+                f"OK: рейтинг ур.{level}, {unique_count} NFT, лот {price:g} TON, акк ~{metrics.account_age_days}д"
             )
             LOGGER.info("MATCH user=%s %s", metrics.user_id, reasons[-1])
         else:

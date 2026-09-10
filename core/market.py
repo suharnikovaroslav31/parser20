@@ -3,10 +3,9 @@
 
 Цикл:
 1. Каталог коллекций `payments.getStarGifts`.
-2. По каждой коллекции — свежие лоты `getResaleStarGifts` (без сортировки по цене:
-   Telegram отдаёт только что выставленные). Старые лоты не перебираем.
-3. MRKT: `/gifts/saling` по дате выставления.
-4. По новому лоту в ценовом фильтре собираем карточку продавца.
+2. Telegram: свежие лоты + самые дешёвые (две первые страницы на коллекцию).
+3. MRKT и Tonnel (жёлтый маркет) — новые и дешёвые лоты.
+4. Фильтр: рейтинг ур.1, ≤2 NFT, молодой аккаунт, цена в диапазоне.
 """
 
 from __future__ import annotations
@@ -116,6 +115,14 @@ class GiftMarketScanner:
                 mrkt_count += 1
                 yield snapshot
             LOGGER.info("MRKT: новых лотов %s", mrkt_count)
+
+            tonnel_count = 0
+            async for snapshot in self._iter_tonnel_listings():
+                if self._stopping():
+                    return
+                tonnel_count += 1
+                yield snapshot
+            LOGGER.info("Tonnel: новых лотов %s", tonnel_count)
             self.tracker.commit_scan()
             finished = True
         except Exception:
@@ -146,7 +153,9 @@ class GiftMarketScanner:
             if index == 1 or index % 25 == 0:
                 LOGGER.info("Telegram market %s/%s: %s", index, len(resale_types), title)
             try:
-                async for snapshot in self._resale_newest(gift_id, title, ton_usd):
+                async for snapshot in self._resale_page(gift_id, title, ton_usd, sort_by_price=False):
+                    yield snapshot
+                async for snapshot in self._resale_page(gift_id, title, ton_usd, sort_by_price=True):
                     yield snapshot
             except RPCError as exc:
                 LOGGER.debug("resale %s (%s): %s", title, gift_id, exc)
@@ -163,22 +172,25 @@ class GiftMarketScanner:
         gifts = getattr(result, "gifts", None) or []
         return list(gifts)
 
-    async def _resale_newest(
+    async def _resale_page(
         self,
         gift_id: int,
         title: str,
         ton_usd: float,
+        *,
+        sort_by_price: bool,
     ) -> AsyncIterator[ProfileSnapshot]:
-        """Первая страница ресейла без sort_by_price = только что выставленные."""
+        """Одна страница: newest (sort_by_price=False) или cheapest."""
         result = await self.scanner._flood.call(
             lambda: self.scanner.client(
                 GetResaleStarGiftsRequest(
                     gift_id=gift_id,
                     offset="",
                     limit=min(50, self.settings.gift_page_size),
+                    sort_by_price=True if sort_by_price else None,
                 )
             ),
-            label=f"resale:{gift_id}",
+            label=f"resale:{gift_id}:{'price' if sort_by_price else 'new'}",
         )
         users = {
             user.id: user
@@ -318,12 +330,12 @@ class GiftMarketScanner:
             LOGGER.warning("MRKT пропущен: нет токена (откройте @mrkt app один раз в Telegram, если ошибка повторяется)")
             return
         ton_usd = await self.market.get_ton_usd()
-        cheap = await self.market.list_recent_gifts(
+        cheap = await self.market.list_mrkt_targets(
             self.live.floor_max_ton,
             min_ton=self.live.floor_min_ton,
-            max_pages=8,
+            max_pages=10,
         )
-        LOGGER.info("MRKT: свежих лотов в диапазоне цены: %s", len(cheap))
+        LOGGER.info("MRKT: кандидатов (новые+дешёвые): %s", len(cheap))
         for item in cheap:
             if self._stopping():
                 return
@@ -333,6 +345,32 @@ class GiftMarketScanner:
             if not self.tracker.observe(key):
                 continue
             snapshot = await self._snapshot_from_mrkt(item, ton_usd)
+            if snapshot is not None:
+                yield snapshot
+
+    async def _iter_tonnel_listings(self) -> AsyncIterator[ProfileSnapshot]:
+        ton_usd = await self.market.get_ton_usd()
+        items = await self.market.list_tonnel_gifts(
+            self.live.floor_max_ton,
+            min_ton=self.live.floor_min_ton,
+            max_pages=4,
+        )
+        LOGGER.info("Tonnel: кандидатов (новые+дешёвые): %s", len(items))
+        for item in items:
+            if self._stopping():
+                return
+            slug = str(item.get("slug") or "")
+            extra = str(item.get("gift_id") or item.get("id") or "")
+            if not slug:
+                name = str(item.get("name") or item.get("gift_name") or "")
+                num = item.get("gift_num") or item.get("number")
+                if name and num is not None:
+                    compact = "".join(part.capitalize() for part in name.split())
+                    slug = f"{compact}-{num}"
+            key = self._lot_key("tonnel", slug, extra)
+            if not self.tracker.observe(key):
+                continue
+            snapshot = await self._snapshot_from_tonnel(item, ton_usd, slug)
             if snapshot is not None:
                 yield snapshot
 
@@ -420,6 +458,97 @@ class GiftMarketScanner:
             processed_ms=elapsed,
             source="mrkt",
             fingerprint_key=f"mrkt:{slug}:{price:.4f}",
+            captured_at=utcnow(),
+        )
+
+    async def _snapshot_from_tonnel(
+        self,
+        item: dict[str, Any],
+        ton_usd: float,
+        slug: str,
+    ) -> Optional[ProfileSnapshot]:
+        started = time.perf_counter()
+        price = to_ton(item.get("price") or item.get("sale_price") or item.get("ton_price"))
+        if price is None:
+            return None
+        if price < self.live.floor_min_ton or price >= self.live.floor_max_ton:
+            return None
+        title = str(item.get("name") or item.get("gift_name") or item.get("title") or "")
+        number = item.get("gift_num") or item.get("number") or item.get("num")
+        if not slug and title and number is not None:
+            compact = "".join(part.capitalize() for part in title.split())
+            slug = f"{compact}-{number}"
+        unique = UniqueGift(
+            slug=slug or title or "tonnel",
+            title=title or "Tonnel gift",
+            number=int(number) if number is not None else None,
+            gift_id=item.get("gift_id") or item.get("id"),
+            model=item.get("model"),
+            backdrop=item.get("backdrop"),
+            symbol=item.get("symbol"),
+            on_resale=True,
+            market_floor_ton=price,
+            market_source="tonnel",
+            telegram_floor_ton=price,
+        )
+        owner = item.get("seller") or item.get("owner") or item.get("user") or {}
+        if not isinstance(owner, dict):
+            owner_id = owner if isinstance(owner, (int, str)) else item.get("sellerId") or item.get("telegram_id")
+            owner = {}
+        else:
+            owner_id = (
+                owner.get("telegram_id")
+                or owner.get("id")
+                or item.get("sellerId")
+                or item.get("telegram_id")
+            )
+        try:
+            owner_id_int = int(owner_id) if owner_id else None
+        except (TypeError, ValueError):
+            owner_id_int = None
+        unique.seller_id = owner_id_int
+        unique.seller_name = (
+            (owner.get("username") if isinstance(owner, dict) else None)
+            or item.get("seller_username")
+            or item.get("username")
+        )
+        user = None
+        if owner_id_int:
+            try:
+                entity = await self.scanner._resolve_user(owner_id_int)
+                if isinstance(entity, User):
+                    user = entity
+            except Exception:
+                user = None
+        metrics = await self._metrics_for_seller(user, owner_id_int, unique.seller_name)
+        inventory = await self._load_profile_nfts(user, unique)
+        if inventory is None:
+            return None
+        profile_uniques, regular = inventory
+        metrics.activity_score = compute_activity_score(
+            username=metrics.username,
+            is_premium=metrics.is_premium,
+            is_verified=metrics.is_verified,
+            has_photo=metrics.has_photo,
+            bio=metrics.bio,
+            personal_channel_id=metrics.personal_channel_id,
+            common_chats_count=metrics.common_chats_count,
+            unique_gift_count=len(profile_uniques),
+            public_channel_count=metrics.public_channel_count,
+        )
+        elapsed = (time.perf_counter() - started) * 1000.0
+        return ProfileSnapshot(
+            metrics=metrics,
+            unique_gifts=profile_uniques,
+            regular_gifts=regular,
+            estimated_value_ton=price,
+            estimated_value_usd=price * ton_usd,
+            min_floor_ton=price,
+            cheap_gifts=[unique],
+            ton_usd=ton_usd,
+            processed_ms=elapsed,
+            source="tonnel",
+            fingerprint_key=f"tonnel:{slug}:{price:.4f}",
             captured_at=utcnow(),
         )
 

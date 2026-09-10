@@ -23,6 +23,12 @@ LOGGER = logging.getLogger("tg_gifts.logger")
 COMMUNITY = "https://t.me/BYRMALDAEVO"
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\ufeff]")
 _URL_OK = re.compile(r"^https://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%\-]+$")
+_SOURCE_NAME = {
+    "tg_market": "Telegram",
+    "telegram_resale": "Telegram",
+    "mrkt": "MRKT",
+    "tonnel": "Tonnel",
+}
 
 
 def _esc(value: object) -> str:
@@ -105,7 +111,7 @@ class GiftLogger:
             else _esc(metrics.display_name)
         )
         return (
-            f"{e('cart')} <b>Маркет</b> <code>{_esc(snapshot.source)}</code> · "
+            f"{e('cart')} <b>Маркет</b> <code>{_esc(_SOURCE_NAME.get(snapshot.source, snapshot.source))}</code> · "
             f"<code>{_ton(snapshot.min_floor_ton)} TON</code>\n"
             f"{e('user')} <b>Продавец</b> {profile_html} "
             f"({_esc(handle)}) · ID <code>{metrics.user_id}</code>\n"

@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     )
     mrkt_api_url: str = Field(default="https://api.tgmrkt.io/api/v1", validation_alias=AliasChoices("MRKT_API_URL"))
     mrkt_auth_token: str = Field(default="", validation_alias=AliasChoices("MRKT_AUTH_TOKEN"))
+    tonnel_api_url: str = Field(
+        default="https://gifts2.tonnel.network",
+        validation_alias=AliasChoices("TONNEL_API_URL"),
+    )
     fragment_base_url: str = Field(default="https://fragment.com", validation_alias=AliasChoices("FRAGMENT_BASE_URL"))
     portal_api_url: str = Field(
         default="https://portal-market.com/api",
@@ -92,13 +96,13 @@ class Settings(BaseSettings):
     floor_threshold_ton: float = Field(default=10.0, ge=0.0, validation_alias=AliasChoices("FLOOR_THRESHOLD_TON"))
     min_unique_gifts: int = Field(default=1, ge=0, validation_alias=AliasChoices("MIN_UNIQUE_GIFTS"))
     max_unique_gifts: int = Field(
-        default=3,
+        default=2,
         ge=1,
         validation_alias=AliasChoices("MAX_UNIQUE_GIFTS"),
         description="Максимум unique NFT в публичном профиле продавца.",
     )
     max_account_age_days: Optional[int] = Field(
-        default=365,
+        default=90,
         validation_alias=AliasChoices("MAX_ACCOUNT_AGE_DAYS"),
         description="None / 0 — не фильтровать по возрасту аккаунта.",
     )
