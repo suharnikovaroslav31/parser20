@@ -94,30 +94,29 @@ class TelegramFloodControl:
             return
         raise asyncio.CancelledError
 
-    async def call(self, factory, *, retries: int = 6, label: str = "rpc") -> Any:
+    async def call(self, factory, *, retries: int = 1, label: str = "rpc") -> Any:
         last_error: BaseException | None = None
         for attempt in range(retries):
             if self._stopping():
                 raise asyncio.CancelledError
             try:
-                return await self.limiter.run(factory)
+                return await asyncio.wait_for(self.limiter.run(factory), timeout=8)
             except asyncio.CancelledError:
                 raise
-            except FloodWaitError as exc:
-                wait = int(getattr(exc, "seconds", 1)) + 1
-                if wait > 20:
-                    LOGGER.warning("Telegram FloodWait %s %ss — пропускаю запрос, не сплю", label, wait)
-                    raise
-                LOGGER.warning("Telegram FloodWait %s: спим %ss (attempt %s)", label, wait, attempt + 1)
-                await self._sleep(wait)
+            except asyncio.TimeoutError as exc:
+                LOGGER.warning("Telegram timeout 8s %s — пропускаю", label)
                 last_error = exc
+                break
+            except FloodWaitError as exc:
+                wait = int(getattr(exc, "seconds", 1) or 1)
+                LOGGER.warning("Telegram FloodWait %s %ss — пропускаю, не сплю", label, wait)
+                raise
             except RPCError as exc:
                 message = str(exc).upper()
-                # Штатные отказы приватности / отсутствия подарков — не ретраим.
                 if any(token in message for token in ("PRIVACY", "GIFT", "SAVED_STAR", "USER_NOT_MUTUAL")):
                     LOGGER.debug("Telegram RPC skip %s: %s", label, exc)
                     raise
-                delay = compute_backoff(attempt, base=1.0, cap=30.0)
+                delay = min(2.0, compute_backoff(attempt, base=0.4, cap=2.0))
                 LOGGER.warning("Telegram RPC %s attempt=%s delay=%.1fs err=%s", label, attempt + 1, delay, exc)
                 await self._sleep(delay)
                 last_error = exc
@@ -303,7 +302,10 @@ class ProfileScanner:
         stars_level: Optional[int] = None
         stars_value: Optional[int] = None
         try:
-            input_user = await self.client.get_input_entity(user)
+            input_user = await self._flood.call(
+                lambda: self.client.get_input_entity(user),
+                label=f"input:{user.id}",
+            )
             try:
                 request = GetFullUserRequest(id=input_user)
             except TypeError:
@@ -326,7 +328,7 @@ class ProfileScanner:
             for chat in getattr(full, "chats", []) or []:
                 if isinstance(chat, Channel) and getattr(chat, "username", None):
                     public_channels += 1
-        except (UserPrivacyRestrictedError, RPCError) as exc:
+        except (UserPrivacyRestrictedError, RPCError, asyncio.TimeoutError) as exc:
             LOGGER.debug("GetFullUser %s: %s", user.id, exc)
 
         username = user.username
@@ -396,7 +398,7 @@ class ProfileScanner:
                     lambda payload=kwargs: self.client(GetSavedStarGiftsRequest(**payload)),
                     label=f"gifts:{user.id}",
                 )
-            except RPCError as exc:
+            except (RPCError, asyncio.TimeoutError) as exc:
                 LOGGER.debug("getSavedStarGifts user=%s: %s", user.id, exc)
                 break
 

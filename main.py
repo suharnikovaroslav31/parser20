@@ -159,33 +159,50 @@ class AnalyticsApp:
             LOGGER.error("MATCH user=%s, карточка в группу не ушла", snapshot.metrics.user_id)
 
     async def _scan_loop(self, live: bool) -> None:
-        while not self._stop.is_set():
-            if not self.live.scanner_enabled:
-                LOGGER.info("Сканер выключен из админки, ждём")
+        async def _heartbeat() -> None:
+            while not self._stop.is_set():
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=12)
+                    return
+                except asyncio.TimeoutError:
+                    LOGGER.info(
+                        "Сканер жив | %s | seen=%s matched=%s",
+                        getattr(self.markets, "stage", "?"),
+                        self._seen,
+                        self._matched,
+                    )
+
+        beat = asyncio.create_task(_heartbeat(), name="scan-heartbeat")
+        try:
+            while not self._stop.is_set():
+                if not self.live.scanner_enabled:
+                    LOGGER.info("Сканер выключен из админки, ждём")
+                    try:
+                        await asyncio.wait_for(self._stop.wait(), timeout=self.live.market_poll_sec)
+                    except asyncio.TimeoutError:
+                        continue
+                    continue
+                LOGGER.info("Старт прохода Telegram Gift Market + MRKT")
+                self.filters.reset_stats()
+                try:
+                    async for snapshot in self.markets.iter_offers():
+                        if self._stop.is_set() or not self.live.scanner_enabled:
+                            break
+                        await self.handle_snapshot(snapshot)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    LOGGER.exception("Ошибка прохода по маркету")
+                LOGGER.info("Фильтры за проход: %s", self.filters.dump_stats())
+                LOGGER.info("Проход: seen=%s matched=%s", self._seen, self._matched)
+                if not live or self._stop.is_set():
+                    break
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=self.live.market_poll_sec)
                 except asyncio.TimeoutError:
                     continue
-                continue
-            LOGGER.info("Старт прохода Telegram Gift Market + MRKT")
-            self.filters.reset_stats()
-            try:
-                async for snapshot in self.markets.iter_offers():
-                    if self._stop.is_set() or not self.live.scanner_enabled:
-                        break
-                    await self.handle_snapshot(snapshot)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                LOGGER.exception("Ошибка прохода по маркету")
-            LOGGER.info("Фильтры за проход: %s", self.filters.dump_stats())
-            LOGGER.info("Проход: seen=%s matched=%s", self._seen, self._matched)
-            if not live or self._stop.is_set():
-                break
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self.live.market_poll_sec)
-            except asyncio.TimeoutError:
-                continue
+        finally:
+            beat.cancel()
 
     async def run(self, *, live: bool) -> None:
         await self.start()

@@ -18,12 +18,10 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Optional
-from urllib.parse import unquote, urlparse, parse_qs
 
 from telethon.errors import RPCError
-from telethon.tl.functions.messages import RequestAppWebViewRequest
 from telethon.tl.functions.payments import GetResaleStarGiftsRequest, GetStarGiftsRequest
-from telethon.tl.types import InputBotAppShortName, InputUser, PeerUser, User
+from telethon.tl.types import PeerUser, User
 
 from config import Settings
 from core.filters import account_age_days, compute_activity_score
@@ -34,7 +32,6 @@ from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
 PROFILE_CAP = 40
-USERNAME_RESOLVE_CAP = 3
 
 
 def _peer_user_id(peer: Any) -> Optional[int]:
@@ -87,11 +84,10 @@ class GiftMarketScanner:
         self.tracker = ListingTracker()
         self._skipped_known = 0
         self._tg_priced = 0
-        self._mrkt_auth_tried = False
         self._catalog_cursor = 0
         self._profiles_this_pass = 0
-        self._username_resolves = 0
         self._seller_cache: dict[int, tuple[AccountMetrics, list[UniqueGift], list]] = {}
+        self.stage = "idle"
 
     def _stopping(self) -> bool:
         return self.stop_event is not None and self.stop_event.is_set()
@@ -109,12 +105,18 @@ class GiftMarketScanner:
         token = (slug or extra or "").strip()
         return f"{source}:{token}" if token else ""
 
+    async def _ton_usd(self) -> float:
+        try:
+            return float(await asyncio.wait_for(self.market.get_ton_usd(), timeout=8))
+        except Exception as exc:
+            LOGGER.warning("курс TON: %s", exc)
+            return 0.0
+
     async def iter_offers(self) -> AsyncIterator[ProfileSnapshot]:
         telegram_count = 0
         self._skipped_known = 0
         self._tg_priced = 0
         self._profiles_this_pass = 0
-        self._username_resolves = 0
         self._seller_cache = {}
         finished = False
         LOGGER.info(
@@ -128,6 +130,8 @@ class GiftMarketScanner:
             self.live.max_account_age_days if self.live.filter_seller_age else "выкл",
         )
         try:
+            self.stage = "mrkt"
+            LOGGER.info("MRKT: HTTP-запрос лотов, без Mini App")
             mrkt_count = 0
             async for snapshot in self._iter_mrkt_listings():
                 if self._stopping():
@@ -138,6 +142,8 @@ class GiftMarketScanner:
             if self._stopping():
                 return
 
+            self.stage = "telegram-catalog"
+            LOGGER.info("Telegram: каталог коллекций")
             async for snapshot in self._iter_telegram_resale():
                 if self._stopping():
                     return
@@ -152,6 +158,8 @@ class GiftMarketScanner:
             if self._stopping():
                 return
 
+            self.stage = "tonnel"
+            LOGGER.info("Tonnel: HTTP-запрос лотов")
             tonnel_count = 0
             async for snapshot in self._iter_tonnel_listings():
                 if self._stopping():
@@ -161,6 +169,7 @@ class GiftMarketScanner:
             LOGGER.info("Tonnel: снимков продавца %s", tonnel_count)
             self.tracker.commit_scan()
             finished = True
+            self.stage = "idle"
         except Exception:
             raise
         finally:
@@ -177,7 +186,7 @@ class GiftMarketScanner:
             or getattr(item, "limited", False)
         ]
         LOGGER.info("Каталог Telegram Gifts: %s типов, к ресейлу %s", len(catalog), len(resale_types))
-        ton_usd = await self.market.get_ton_usd()
+        ton_usd = await self._ton_usd()
         total = len(resale_types)
         if not total:
             return
@@ -202,6 +211,7 @@ class GiftMarketScanner:
                 continue
             if step == 0 or (step + 1) % 5 == 0:
                 LOGGER.info("Telegram market %s/%s: %s", index + 1, total, title)
+            self.stage = f"telegram {index + 1}/{total} {title}"
             try:
                 async for snapshot in self._resale_cheap(gift_id, title, ton_usd):
                     yield snapshot
@@ -214,7 +224,7 @@ class GiftMarketScanner:
                             total,
                         )
                         return
-            except (RPCError, asyncio.CancelledError) as exc:
+            except (RPCError, asyncio.TimeoutError, asyncio.CancelledError) as exc:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 LOGGER.warning("resale %s (%s): %s", title, gift_id, exc)
@@ -226,7 +236,7 @@ class GiftMarketScanner:
                 lambda: self.scanner.client(GetStarGiftsRequest(hash=0)),
                 label="getStarGifts",
             )
-        except RPCError as exc:
+        except (RPCError, asyncio.TimeoutError) as exc:
             LOGGER.error("getStarGifts: %s", exc)
             return []
         gifts = getattr(result, "gifts", None) or []
@@ -282,7 +292,7 @@ class GiftMarketScanner:
                 return
             try:
                 snapshot = await self._snapshot_from_telegram_lot(raw, users, price, ton_usd)
-            except RPCError as exc:
+            except (RPCError, asyncio.TimeoutError) as exc:
                 LOGGER.info("лот %s %s: %s", title, slug or extra, exc)
                 continue
             if snapshot is not None:
@@ -353,79 +363,27 @@ class GiftMarketScanner:
             captured_at=utcnow(),
         )
 
-    async def ensure_mrkt_auth(self) -> Optional[str]:
-        if self.market.mrkt_token:
-            return self.market.mrkt_token
-        if self._mrkt_auth_tried:
-            return None
-        self._mrkt_auth_tried = True
-        client = self.scanner.client
-        try:
-            bot = await self.scanner._flood.call(
-                lambda: client.get_entity("mrkt"),
-                label="entity:mrkt",
-            )
-        except Exception as exc:
-            LOGGER.info("MRKT entity @mrkt: %s — API без токена", exc)
-            return None
-        if not isinstance(bot, User) or not bot.access_hash:
-            LOGGER.warning("MRKT: Mini App сессия не получена, пробую API без токена")
-            return None
-        input_bot = InputUser(bot.id, bot.access_hash)
-        try:
-            web = await self.scanner._flood.call(
-                lambda: client(
-                    RequestAppWebViewRequest(
-                        peer=bot,
-                        app=InputBotAppShortName(bot_id=input_bot, short_name="app"),
-                        platform="android",
-                        write_allowed=True,
-                    )
-                ),
-                label="mrkt:webview:app",
-            )
-        except Exception as exc:
-            LOGGER.info("MRKT WebView app: %s — API без токена", exc)
-            return None
-        url = getattr(web, "url", "") or ""
-        init_data = _extract_webapp_data(url)
-        if not init_data:
-            LOGGER.warning("MRKT: Mini App сессия не получена, пробую API без токена")
-            return None
-        token = await self._mrkt_exchange(init_data)
-        if token:
-            return token
-        LOGGER.warning("MRKT: Mini App сессия не получена, пробую API без токена")
-        return None
-
-    async def _mrkt_exchange(self, init_data: str) -> Optional[str]:
-        payload = await self.market.http.request_json(
-            "POST",
-            f"{self.settings.mrkt_api_url.rstrip('/')}/auth",
-            json_body={"data": init_data},
-            headers={"Referer": "https://cdn.tgmrkt.io/", "Accept": "application/json"},
-        )
-        token = None
-        if isinstance(payload, dict):
-            token = payload.get("token") or payload.get("accessToken")
-        if token:
-            self.market.set_mrkt_token(str(token))
-            LOGGER.info("MRKT: сессия Mini App получена")
-            return str(token)
-        LOGGER.warning("MRKT auth ответ без token: %s", payload)
-        return None
-
     async def _iter_mrkt_listings(self) -> AsyncIterator[ProfileSnapshot]:
-        token = await self.ensure_mrkt_auth()
-        LOGGER.info("MRKT: %s", "авторизован" if token else "без токена")
-        ton_usd = await self.market.get_ton_usd()
-        cheap = await self.market.list_mrkt_targets(
-            self.live.floor_max_ton,
-            min_ton=self.live.floor_min_ton,
-            max_pages=10,
-        )
+        token = self.market.mrkt_token
+        LOGGER.info("MRKT: %s", "токен из env" if token else "без токена")
+        ton_usd = await self._ton_usd()
+        try:
+            cheap = await asyncio.wait_for(
+                self.market.list_mrkt_targets(
+                    self.live.floor_max_ton,
+                    min_ton=self.live.floor_min_ton,
+                    max_pages=2,
+                ),
+                timeout=20,
+            )
+        except asyncio.TimeoutError:
+            LOGGER.warning("MRKT HTTP timeout 20s — дальше Telegram")
+            cheap = []
+        except Exception as exc:
+            LOGGER.warning("MRKT HTTP: %s — дальше Telegram", exc)
+            cheap = []
         LOGGER.info("MRKT: лотов с маркета %s", len(cheap))
-        for item in cheap[:60]:
+        for item in cheap[:40]:
             if self._stopping():
                 return
             slug = str(item.get("slug") or item.get("gift_id_string") or "")
@@ -439,12 +397,22 @@ class GiftMarketScanner:
                 yield snapshot
 
     async def _iter_tonnel_listings(self) -> AsyncIterator[ProfileSnapshot]:
-        ton_usd = await self.market.get_ton_usd()
-        items = await self.market.list_tonnel_gifts(
-            self.live.floor_max_ton,
-            min_ton=self.live.floor_min_ton,
-            max_pages=4,
-        )
+        ton_usd = await self._ton_usd()
+        try:
+            items = await asyncio.wait_for(
+                self.market.list_tonnel_gifts(
+                    self.live.floor_max_ton,
+                    min_ton=self.live.floor_min_ton,
+                    max_pages=2,
+                ),
+                timeout=20,
+            )
+        except asyncio.TimeoutError:
+            LOGGER.warning("Tonnel HTTP timeout 20s")
+            items = []
+        except Exception as exc:
+            LOGGER.warning("Tonnel HTTP: %s", exc)
+            items = []
         LOGGER.info("Tonnel: кандидатов (новые+дешёвые): %s", len(items))
         for item in items[:40]:
             if self._stopping():
@@ -512,7 +480,7 @@ class GiftMarketScanner:
             or item.get("owner_name")
             or item.get("username")
         )
-        user = await self._user_by_username(unique.seller_name)
+        user = None
         metrics = await self._metrics_for_seller(user, owner_id_int, unique.seller_name)
         inventory = await self._load_profile_nfts(user, unique)
         profile_uniques, regular = inventory
@@ -594,7 +562,7 @@ class GiftMarketScanner:
             or item.get("seller_username")
             or item.get("username")
         )
-        user = await self._user_by_username(unique.seller_name)
+        user = None
         metrics = await self._metrics_for_seller(user, owner_id_int, unique.seller_name)
         inventory = await self._load_profile_nfts(user, unique)
         profile_uniques, regular = inventory
@@ -624,19 +592,6 @@ class GiftMarketScanner:
             fingerprint_key=f"tonnel:{slug}:{price:.4f}",
             captured_at=utcnow(),
         )
-
-    async def _user_by_username(self, name: Optional[str]) -> Optional[User]:
-        if not name or self._username_resolves >= USERNAME_RESOLVE_CAP:
-            return None
-        token = str(name).strip().lstrip("@")
-        if not token or token.isdigit() or " " in token:
-            return None
-        self._username_resolves += 1
-        try:
-            entity = await self.scanner._resolve_user(token)
-        except Exception:
-            return None
-        return entity if isinstance(entity, User) else None
 
     async def _load_profile_nfts(
         self,
@@ -704,20 +659,3 @@ class GiftMarketScanner:
             public_channel_count=0,
             activity_score=score,
         )
-
-
-def _extract_webapp_data(url: str) -> str:
-    if not url:
-        return ""
-    if "tgWebAppData=" in url:
-        chunk = url.split("tgWebAppData=", 1)[1]
-        chunk = chunk.split("&tgWebAppVersion", 1)[0]
-        chunk = chunk.split("#", 1)[0]
-        return unquote(chunk)
-    parsed = urlparse(url.replace("#", "?", 1) if "#" in url and "?" not in url.split("#", 1)[0] else url)
-    query = parse_qs(parsed.query)
-    fragment = parse_qs(parsed.fragment)
-    for pool in (query, fragment):
-        if "tgWebAppData" in pool:
-            return unquote(pool["tgWebAppData"][0])
-    return ""
