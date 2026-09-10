@@ -2,14 +2,18 @@
 Сканер встроенного маркета Telegram Gifts и MRKT.
 
 Цикл:
-1. Каталог коллекций `payments.getStarGifts`.
-2. Telegram: свежие лоты + самые дешёвые (две первые страницы на коллекцию).
-3. MRKT и Tonnel (жёлтый маркет) — новые и дешёвые лоты.
+1. MRKT HTTP (быстро, без Telethon).
+2. Telegram: только дешёвая страница каждой коллекции, продавцы из result.users.
+3. Tonnel HTTP.
 4. Фильтр: рейтинг ур.1, ≤2 NFT, молодой аккаунт, цена в диапазоне.
+
+Не вызываем get_entity по каждому seller_id — это ловит FloodWait на минуты
+и выглядит как «сканер ничего не ищет».
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -17,7 +21,7 @@ from typing import Any, Optional
 from urllib.parse import unquote, urlparse, parse_qs
 
 from telethon.errors import RPCError
-from telethon.tl.functions.messages import RequestAppWebViewRequest, RequestWebViewRequest
+from telethon.tl.functions.messages import RequestAppWebViewRequest
 from telethon.tl.functions.payments import GetResaleStarGiftsRequest, GetStarGiftsRequest
 from telethon.tl.types import InputBotAppShortName, InputUser, PeerUser, User
 
@@ -29,6 +33,8 @@ from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
+PROFILE_CAP = 40
+USERNAME_RESOLVE_CAP = 3
 
 
 def _peer_user_id(peer: Any) -> Optional[int]:
@@ -81,20 +87,23 @@ class GiftMarketScanner:
         self.tracker = ListingTracker()
         self._skipped_known = 0
         self._tg_priced = 0
+        self._mrkt_auth_tried = False
+        self._catalog_cursor = 0
+        self._profiles_this_pass = 0
+        self._username_resolves = 0
+        self._seller_cache: dict[int, tuple[AccountMetrics, list[UniqueGift], list]] = {}
 
     def _stopping(self) -> bool:
         return self.stop_event is not None and self.stop_event.is_set()
 
-    async def _resolve_seller(self, owner_id: Optional[int], users: dict[int, User]) -> Optional[User]:
+    def _seller_from_users(self, owner_id: Optional[int], users: dict[int, User]) -> Optional[User]:
+        """Только пользователи из ответа маркета. Без get_entity по ID."""
         if not owner_id:
             return None
         user = users.get(int(owner_id))
-        if user is not None and not getattr(user, "min", False) and not user.bot:
-            return user
-        resolved = await self.scanner._resolve_user(int(owner_id))
-        if isinstance(resolved, User):
-            return resolved
-        return user if isinstance(user, User) else None
+        if user is None or user.bot:
+            return None
+        return user
 
     def _lot_key(self, source: str, slug: str, extra: str = "") -> str:
         token = (slug or extra or "").strip()
@@ -104,6 +113,9 @@ class GiftMarketScanner:
         telegram_count = 0
         self._skipped_known = 0
         self._tg_priced = 0
+        self._profiles_this_pass = 0
+        self._username_resolves = 0
+        self._seller_cache = {}
         finished = False
         LOGGER.info(
             "Фильтры сейчас: цена %s–%s TON, NFT %s–%s, рейтинг %s–%s, возраст ≤%sд",
@@ -116,20 +128,6 @@ class GiftMarketScanner:
             self.live.max_account_age_days if self.live.filter_seller_age else "выкл",
         )
         try:
-            async for snapshot in self._iter_telegram_resale():
-                if self._stopping():
-                    return
-                telegram_count += 1
-                yield snapshot
-            if self._stopping():
-                return
-            LOGGER.info(
-                "Telegram: лотов в цене %s, снимков продавца %s, уже разобранных пропуск %s",
-                self._tg_priced,
-                telegram_count,
-                self._skipped_known,
-            )
-
             mrkt_count = 0
             async for snapshot in self._iter_mrkt_listings():
                 if self._stopping():
@@ -137,6 +135,22 @@ class GiftMarketScanner:
                 mrkt_count += 1
                 yield snapshot
             LOGGER.info("MRKT: снимков продавца %s", mrkt_count)
+            if self._stopping():
+                return
+
+            async for snapshot in self._iter_telegram_resale():
+                if self._stopping():
+                    return
+                telegram_count += 1
+                yield snapshot
+            LOGGER.info(
+                "Telegram: лотов в цене %s, снимков продавца %s, повторный пропуск %s",
+                self._tg_priced,
+                telegram_count,
+                self._skipped_known,
+            )
+            if self._stopping():
+                return
 
             tonnel_count = 0
             async for snapshot in self._iter_tonnel_listings():
@@ -164,23 +178,47 @@ class GiftMarketScanner:
         ]
         LOGGER.info("Каталог Telegram Gifts: %s типов, к ресейлу %s", len(catalog), len(resale_types))
         ton_usd = await self.market.get_ton_usd()
-
-        for index, base in enumerate(resale_types, start=1):
+        total = len(resale_types)
+        if not total:
+            return
+        start = self._catalog_cursor % total
+        for step in range(total):
             if self._stopping():
                 return
+            if self._profiles_this_pass >= PROFILE_CAP:
+                self._catalog_cursor = (start + step) % total
+                LOGGER.info(
+                    "Telegram: лимит %s профилей за проход, курсор %s/%s",
+                    PROFILE_CAP,
+                    self._catalog_cursor + 1,
+                    total,
+                )
+                return
+            index = (start + step) % total
+            base = resale_types[index]
             gift_id = int(getattr(base, "id", 0) or 0)
             title = str(getattr(base, "title", "") or gift_id)
             if not gift_id:
                 continue
-            if index == 1 or index % 25 == 0:
-                LOGGER.info("Telegram market %s/%s: %s", index, len(resale_types), title)
+            if step == 0 or (step + 1) % 5 == 0:
+                LOGGER.info("Telegram market %s/%s: %s", index + 1, total, title)
             try:
-                async for snapshot in self._resale_page(gift_id, title, ton_usd, sort_by_price=False):
+                async for snapshot in self._resale_cheap(gift_id, title, ton_usd):
                     yield snapshot
-                async for snapshot in self._resale_page(gift_id, title, ton_usd, sort_by_price=True):
-                    yield snapshot
-            except RPCError as exc:
+                    if self._profiles_this_pass >= PROFILE_CAP:
+                        self._catalog_cursor = index
+                        LOGGER.info(
+                            "Telegram: лимит %s профилей за проход, курсор %s/%s",
+                            PROFILE_CAP,
+                            index + 1,
+                            total,
+                        )
+                        return
+            except (RPCError, asyncio.CancelledError) as exc:
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 LOGGER.warning("resale %s (%s): %s", title, gift_id, exc)
+        self._catalog_cursor = 0
 
     async def _gift_catalog(self) -> list[Any]:
         try:
@@ -194,25 +232,23 @@ class GiftMarketScanner:
         gifts = getattr(result, "gifts", None) or []
         return list(gifts)
 
-    async def _resale_page(
+    async def _resale_cheap(
         self,
         gift_id: int,
         title: str,
         ton_usd: float,
-        *,
-        sort_by_price: bool,
     ) -> AsyncIterator[ProfileSnapshot]:
-        """Одна страница: newest (sort_by_price=False) или cheapest."""
+        """Одна страница самых дешёвых. Дальше порога цены не идём."""
         result = await self.scanner._flood.call(
             lambda: self.scanner.client(
                 GetResaleStarGiftsRequest(
                     gift_id=gift_id,
                     offset="",
                     limit=min(50, self.settings.gift_page_size),
-                    sort_by_price=True if sort_by_price else None,
+                    sort_by_price=True,
                 )
             ),
-            label=f"resale:{gift_id}:{'price' if sort_by_price else 'new'}",
+            label=f"resale:{gift_id}:price",
         )
         users = {
             user.id: user
@@ -220,6 +256,7 @@ class GiftMarketScanner:
             if isinstance(user, User)
         }
         gifts = getattr(result, "gifts", None) or []
+        attempted = 0
         for raw in gifts:
             if self._stopping():
                 return
@@ -230,18 +267,30 @@ class GiftMarketScanner:
             )
             if price is None:
                 continue
-            if price < self.live.floor_min_ton or price >= self.live.floor_max_ton:
+            if price < self.live.floor_min_ton:
                 continue
+            if price >= self.live.floor_max_ton:
+                break
             self._tg_priced += 1
             slug = str(getattr(raw, "slug", "") or "")
             extra = f"{gift_id}:{getattr(raw, 'num', '')}:{getattr(raw, 'id', '')}"
             key = self._lot_key("tg", slug, extra)
-            if not self.tracker.observe(key):
+            if not self.tracker.should_process(key):
                 self._skipped_known += 1
                 continue
-            snapshot = await self._snapshot_from_telegram_lot(raw, users, price, ton_usd)
+            if self._profiles_this_pass >= PROFILE_CAP:
+                return
+            try:
+                snapshot = await self._snapshot_from_telegram_lot(raw, users, price, ton_usd)
+            except RPCError as exc:
+                LOGGER.info("лот %s %s: %s", title, slug or extra, exc)
+                continue
             if snapshot is not None:
+                self.tracker.mark(key)
                 yield snapshot
+            attempted += 1
+            if attempted >= 12:
+                break
 
     async def _snapshot_from_telegram_lot(
         self,
@@ -267,10 +316,16 @@ class GiftMarketScanner:
         owner_id = _peer_user_id(getattr(raw, "owner_id", None))
         unique.seller_id = owner_id
         unique.seller_name = getattr(raw, "owner_name", None)
-        user = await self._resolve_seller(owner_id, users)
-        inventory = await self._load_profile_nfts(user, unique)
-        profile_uniques, regular = inventory
-        metrics = await self._metrics_for_seller(user, owner_id, unique.seller_name)
+        cached = self._seller_cache.get(int(owner_id)) if owner_id else None
+        if cached is not None:
+            metrics, profile_uniques, regular = cached
+        else:
+            user = self._seller_from_users(owner_id, users)
+            profile_uniques, regular = await self._load_profile_nfts(user, unique)
+            metrics = await self._metrics_for_seller(user, owner_id, unique.seller_name)
+            if owner_id:
+                self._seller_cache[int(owner_id)] = (metrics, profile_uniques, regular)
+            self._profiles_this_pass += 1
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
             is_premium=metrics.is_premium,
@@ -301,62 +356,45 @@ class GiftMarketScanner:
     async def ensure_mrkt_auth(self) -> Optional[str]:
         if self.market.mrkt_token:
             return self.market.mrkt_token
+        if self._mrkt_auth_tried:
+            return None
+        self._mrkt_auth_tried = True
         client = self.scanner.client
-        for username in ("mrkt", "MRKT", "tgmrkt"):
-            try:
-                bot = await self.scanner._flood.call(
-                    lambda name=username: client.get_entity(name),
-                    label=f"entity:{username}",
-                )
-            except Exception as exc:
-                LOGGER.info("MRKT entity @%s: %s", username, exc)
-                continue
-            if not isinstance(bot, User) or not bot.access_hash:
-                continue
-            input_bot = InputUser(bot.id, bot.access_hash)
-            for short in ("app", "market", "start"):
-                try:
-                    web = await self.scanner._flood.call(
-                        lambda s=short: client(
-                            RequestAppWebViewRequest(
-                                peer=bot,
-                                app=InputBotAppShortName(bot_id=input_bot, short_name=s),
-                                platform="android",
-                                write_allowed=True,
-                            )
-                        ),
-                        label=f"mrkt:webview:{short}",
+        try:
+            bot = await self.scanner._flood.call(
+                lambda: client.get_entity("mrkt"),
+                label="entity:mrkt",
+            )
+        except Exception as exc:
+            LOGGER.info("MRKT entity @mrkt: %s — API без токена", exc)
+            return None
+        if not isinstance(bot, User) or not bot.access_hash:
+            LOGGER.warning("MRKT: Mini App сессия не получена, пробую API без токена")
+            return None
+        input_bot = InputUser(bot.id, bot.access_hash)
+        try:
+            web = await self.scanner._flood.call(
+                lambda: client(
+                    RequestAppWebViewRequest(
+                        peer=bot,
+                        app=InputBotAppShortName(bot_id=input_bot, short_name="app"),
+                        platform="android",
+                        write_allowed=True,
                     )
-                except Exception as exc:
-                    LOGGER.info("MRKT WebView %s: %s", short, exc)
-                    continue
-                url = getattr(web, "url", "") or ""
-                init_data = _extract_webapp_data(url)
-                if not init_data:
-                    continue
-                token = await self._mrkt_exchange(init_data)
-                if token:
-                    return token
-            try:
-                web = await self.scanner._flood.call(
-                    lambda: client(
-                        RequestWebViewRequest(
-                            peer=bot,
-                            bot=input_bot,
-                            url="https://cdn.tgmrkt.io/",
-                            platform="android",
-                        )
-                    ),
-                    label="mrkt:webview:url",
-                )
-                url = getattr(web, "url", "") or ""
-                init_data = _extract_webapp_data(url)
-                if init_data:
-                    token = await self._mrkt_exchange(init_data)
-                    if token:
-                        return token
-            except Exception as exc:
-                LOGGER.info("MRKT RequestWebView: %s", exc)
+                ),
+                label="mrkt:webview:app",
+            )
+        except Exception as exc:
+            LOGGER.info("MRKT WebView app: %s — API без токена", exc)
+            return None
+        url = getattr(web, "url", "") or ""
+        init_data = _extract_webapp_data(url)
+        if not init_data:
+            LOGGER.warning("MRKT: Mini App сессия не получена, пробую API без токена")
+            return None
+        token = await self._mrkt_exchange(init_data)
+        if token:
+            return token
         LOGGER.warning("MRKT: Mini App сессия не получена, пробую API без токена")
         return None
 
@@ -387,16 +425,17 @@ class GiftMarketScanner:
             max_pages=10,
         )
         LOGGER.info("MRKT: лотов с маркета %s", len(cheap))
-        for item in cheap:
+        for item in cheap[:60]:
             if self._stopping():
                 return
             slug = str(item.get("slug") or item.get("gift_id_string") or "")
             extra = str(item.get("id") or item.get("gift_id") or "")
             key = self._lot_key("mrkt", slug, extra)
-            if not self.tracker.observe(key):
+            if not self.tracker.should_process(key):
                 continue
             snapshot = await self._snapshot_from_mrkt(item, ton_usd)
             if snapshot is not None:
+                self.tracker.mark(key)
                 yield snapshot
 
     async def _iter_tonnel_listings(self) -> AsyncIterator[ProfileSnapshot]:
@@ -407,7 +446,7 @@ class GiftMarketScanner:
             max_pages=4,
         )
         LOGGER.info("Tonnel: кандидатов (новые+дешёвые): %s", len(items))
-        for item in items:
+        for item in items[:40]:
             if self._stopping():
                 return
             slug = str(item.get("slug") or "")
@@ -419,10 +458,11 @@ class GiftMarketScanner:
                     compact = "".join(part.capitalize() for part in name.split())
                     slug = f"{compact}-{num}"
             key = self._lot_key("tonnel", slug, extra)
-            if not self.tracker.observe(key):
+            if not self.tracker.should_process(key):
                 continue
             snapshot = await self._snapshot_from_tonnel(item, ton_usd, slug)
             if snapshot is not None:
+                self.tracker.mark(key)
                 yield snapshot
 
     async def _snapshot_from_mrkt(self, item: dict[str, Any], ton_usd: float) -> Optional[ProfileSnapshot]:
@@ -472,14 +512,7 @@ class GiftMarketScanner:
             or item.get("owner_name")
             or item.get("username")
         )
-        user = None
-        if owner_id_int:
-            try:
-                entity = await self.scanner._resolve_user(owner_id_int)
-                if isinstance(entity, User):
-                    user = entity
-            except Exception:
-                user = None
+        user = await self._user_by_username(unique.seller_name)
         metrics = await self._metrics_for_seller(user, owner_id_int, unique.seller_name)
         inventory = await self._load_profile_nfts(user, unique)
         profile_uniques, regular = inventory
@@ -561,14 +594,7 @@ class GiftMarketScanner:
             or item.get("seller_username")
             or item.get("username")
         )
-        user = None
-        if owner_id_int:
-            try:
-                entity = await self.scanner._resolve_user(owner_id_int)
-                if isinstance(entity, User):
-                    user = entity
-            except Exception:
-                user = None
+        user = await self._user_by_username(unique.seller_name)
         metrics = await self._metrics_for_seller(user, owner_id_int, unique.seller_name)
         inventory = await self._load_profile_nfts(user, unique)
         profile_uniques, regular = inventory
@@ -599,6 +625,19 @@ class GiftMarketScanner:
             captured_at=utcnow(),
         )
 
+    async def _user_by_username(self, name: Optional[str]) -> Optional[User]:
+        if not name or self._username_resolves >= USERNAME_RESOLVE_CAP:
+            return None
+        token = str(name).strip().lstrip("@")
+        if not token or token.isdigit() or " " in token:
+            return None
+        self._username_resolves += 1
+        try:
+            entity = await self.scanner._resolve_user(token)
+        except Exception:
+            return None
+        return entity if isinstance(entity, User) else None
+
     async def _load_profile_nfts(
         self,
         user: Optional[User],
@@ -608,7 +647,7 @@ class GiftMarketScanner:
         if user is None or user.bot or getattr(user, "deleted", False):
             return [], []
         try:
-            uniques, regular = await self.scanner.fetch_saved_gifts(user)
+            uniques, regular = await self.scanner.fetch_saved_gifts(user, stop_after_unique=3)
         except Exception as exc:
             LOGGER.info("gifts профиля %s: %s", getattr(user, "id", "?"), exc)
             return [], []

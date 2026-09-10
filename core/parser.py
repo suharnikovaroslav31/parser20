@@ -105,6 +105,9 @@ class TelegramFloodControl:
                 raise
             except FloodWaitError as exc:
                 wait = int(getattr(exc, "seconds", 1)) + 1
+                if wait > 20:
+                    LOGGER.warning("Telegram FloodWait %s %ss — пропускаю запрос, не сплю", label, wait)
+                    raise
                 LOGGER.warning("Telegram FloodWait %s: спим %ss (attempt %s)", label, wait, attempt + 1)
                 await self._sleep(wait)
                 last_error = exc
@@ -358,7 +361,12 @@ class ProfileScanner:
             stars_rating_stars=int(stars_value) if stars_value is not None else None,
         )
 
-    async def fetch_saved_gifts(self, user: User) -> tuple[list[UniqueGift], list[RegularGift]]:
+    async def fetch_saved_gifts(
+        self,
+        user: User,
+        *,
+        stop_after_unique: Optional[int] = None,
+    ) -> tuple[list[UniqueGift], list[RegularGift]]:
         """
         Публичные подарки профиля.
 
@@ -368,12 +376,13 @@ class ProfileScanner:
         regular: list[RegularGift] = []
         offset = ""
         pages = 0
+        max_pages = 2 if stop_after_unique is not None else 40
         input_peer = await self._flood.call(
             lambda: self.client.get_input_entity(user),
             label=f"input:{user.id}",
         )
         supported = inspect.signature(GetSavedStarGiftsRequest).parameters
-        while pages < 40:
+        while pages < max_pages:
             pages += 1
             kwargs: dict[str, Any] = {
                 "peer": input_peer,
@@ -398,6 +407,8 @@ class ProfileScanner:
                     unique.append(parsed_unique)
                 if parsed_regular is not None:
                     regular.append(parsed_regular)
+            if stop_after_unique is not None and len(unique) >= stop_after_unique:
+                break
 
             next_offset = getattr(result, "next_offset", None)
             if not next_offset or not gifts:

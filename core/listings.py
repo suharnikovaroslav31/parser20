@@ -1,4 +1,4 @@
-"""Трекер уже разобранных лотов — без «прогрева», который глушил поиск."""
+"""Трекер уже разобранных лотов."""
 
 from __future__ import annotations
 
@@ -8,47 +8,33 @@ from pathlib import Path
 
 LOGGER = logging.getLogger("tg_gifts.listings")
 DEFAULT_PATH = Path("data/seen_listings.json")
-VERSION = 2
+VERSION = 3
 
 
 class ListingTracker:
-    """
-    Пропускаем только лоты, которые уже разбирали.
-    Первый проход тоже разбирает — иначе бот «молчит».
-    """
+    """Помечаем лот только после реального разбора. Незавершённый круг не сжигает очередь."""
 
     def __init__(self, path: Path = DEFAULT_PATH) -> None:
         self.path = path
-        self._prev: set[str] = set()
-        self._curr: set[str] = set()
+        self._done: set[str] = set()
         self._load()
 
-    @property
-    def warming_up(self) -> bool:
-        return False
+    def should_process(self, key: str) -> bool:
+        return bool(key) and key not in self._done
 
-    def observe(self, key: str) -> bool:
-        """True — этот лот ещё не разбирали, нужно снять карточку."""
-        if not key:
-            return False
-        if key in self._curr or key in self._prev:
-            return False
-        self._curr.add(key)
-        return True
+    def mark(self, key: str) -> None:
+        if key:
+            self._done.add(key)
 
     def commit_scan(self) -> None:
-        self._prev |= self._curr
-        if len(self._prev) > 80_000:
-            extra = len(self._prev) - 60_000
-            for item in list(self._prev)[:extra]:
-                self._prev.discard(item)
-        self._curr = set()
+        if len(self._done) > 80_000:
+            extra = len(self._done) - 50_000
+            for item in list(self._done)[:extra]:
+                self._done.discard(item)
         self._save()
-        LOGGER.info("Трекер лотов: разобрано всего %s", len(self._prev))
+        LOGGER.info("Трекер лотов: разобрано %s", len(self._done))
 
     def discard_partial(self) -> None:
-        self._prev |= self._curr
-        self._curr = set()
         self._save()
 
     def _load(self) -> None:
@@ -60,14 +46,13 @@ class ListingTracker:
             LOGGER.warning("Не прочитал %s: %s", self.path, exc)
             return
         if not isinstance(raw, dict) or raw.get("version") != VERSION:
-            LOGGER.info("Старый трекер прогрева сброшен — начинаю реальный разбор лотов")
+            LOGGER.info("Сбрасываю старый трекер — снова разбираю текущие лоты")
             return
         keys = raw.get("keys")
         if isinstance(keys, list):
-            self._prev = {str(item) for item in keys if item}
-            LOGGER.info("Трекер лотов: %s уже разобранных", len(self._prev))
+            self._done = {str(item) for item in keys if item}
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"version": VERSION, "keys": sorted(self._prev)}
+        payload = {"version": VERSION, "keys": sorted(self._done)}
         self.path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
