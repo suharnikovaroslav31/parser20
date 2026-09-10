@@ -28,6 +28,8 @@ _SOURCE_NAME = {
     "telegram_resale": "Telegram",
     "mrkt": "MRKT",
     "tonnel": "Tonnel",
+    "portal": "Portals",
+    "getgems": "Getgems",
 }
 
 

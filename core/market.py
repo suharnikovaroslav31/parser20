@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Optional
@@ -16,6 +17,11 @@ from typing import Any, Optional
 from telethon.errors import RPCError
 from telethon.tl.functions.payments import GetResaleStarGiftsRequest, GetStarGiftsRequest
 from telethon.tl.types import PeerUser, User
+
+try:
+    from telethon.tl.functions.payments import GetUniqueStarGiftRequest
+except ImportError:
+    GetUniqueStarGiftRequest = None  # type: ignore[misc,assignment]
 
 from config import Settings
 from core.filters import account_age_days, compute_activity_score
@@ -27,8 +33,9 @@ from core.ton_client import NANOTON, TonMarketClient, to_ton
 LOGGER = logging.getLogger("tg_gifts.market")
 CHEAP_PAGES = 8
 NEW_PAGES = 2
-MRKT_LIMIT = 120
-TONNEL_LIMIT = 120
+EXTERNAL_LIMIT = 80
+_SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
+_USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 
 
 def _peer_user_id(peer: Any) -> Optional[int]:
@@ -39,6 +46,75 @@ def _peer_user_id(peer: Any) -> Optional[int]:
     if isinstance(peer, PeerUser):
         return int(peer.user_id)
     return getattr(peer, "user_id", None)
+
+
+def marketplace_slug(item: dict[str, Any]) -> str:
+    """Slug подарка Telegram: PlushPepe-1. Без перебора user id."""
+    for key in ("slug", "gift_id_string", "gift_slug", "tg_slug"):
+        raw = str(item.get(key) or "").strip()
+        if _SLUG_RE.match(raw):
+            return raw
+    name = str(
+        item.get("name")
+        or item.get("gift_name")
+        or item.get("title")
+        or item.get("collection_name")
+        or item.get("collectionName")
+        or ""
+    ).strip()
+    num = item.get("gift_num") or item.get("number") or item.get("num") or item.get("tg_id")
+    if num is None and "#" in name:
+        left, _, right = name.rpartition("#")
+        name = left.strip()
+        digits = "".join(ch for ch in right if ch.isdigit())
+        num = int(digits) if digits else None
+    if name and num is not None:
+        compact = "".join(part.capitalize() for part in name.replace("-", " ").split())
+        if compact:
+            return f"{compact}-{int(num)}"
+    return ""
+
+
+def marketplace_username(item: dict[str, Any]) -> Optional[str]:
+    owner = item.get("owner") or item.get("seller") or item.get("user") or {}
+    candidates = []
+    if isinstance(owner, dict):
+        candidates.extend(
+            [
+                owner.get("username"),
+                owner.get("telegram_username"),
+                owner.get("name"),
+            ]
+        )
+    elif isinstance(owner, str):
+        candidates.append(owner)
+    candidates.extend(
+        [
+            item.get("username"),
+            item.get("seller_username"),
+            item.get("owner_name"),
+            item.get("seller_name"),
+        ]
+    )
+    for raw in candidates:
+        if not isinstance(raw, str):
+            continue
+        clean = raw.strip().lstrip("@")
+        if _USER_RE.match(clean):
+            return clean
+    return None
+
+
+def marketplace_http_price(item: dict[str, Any]) -> Optional[float]:
+    return to_ton(
+        item.get("sale_price")
+        or item.get("salePrice")
+        or item.get("price")
+        or item.get("sale_price_ton")
+        or item.get("sale_price_nano_tons")
+        or item.get("ton_price")
+        or item.get("price_ton")
+    )
 
 
 def profile_unique_gifts(profile_uniques: list[UniqueGift], listed: UniqueGift) -> list[UniqueGift]:
@@ -89,6 +165,7 @@ class GiftMarketScanner:
         self._skipped_known = 0
         self._tg_priced = 0
         self._seller_cache: dict[int, tuple[AccountMetrics, list[UniqueGift], list]] = {}
+        self._username_cache: dict[str, Optional[User]] = {}
         self.stage = "idle"
 
     def _stopping(self) -> bool:
@@ -119,6 +196,7 @@ class GiftMarketScanner:
         self._skipped_known = 0
         self._tg_priced = 0
         self._seller_cache = {}
+        self._username_cache = {}
         finished = False
         LOGGER.info(
             "Фильтры сейчас: цена %s–%s TON, NFT %s–%s, рейтинг %s–%s, возраст ≤%sд",
@@ -168,6 +246,30 @@ class GiftMarketScanner:
                 tonnel_count += 1
                 yield snapshot
             LOGGER.info("Tonnel: снимков продавца %s", tonnel_count)
+            if self._stopping():
+                return
+
+            self.stage = "portal"
+            LOGGER.info("Portals: HTTP-запрос лотов")
+            portal_count = 0
+            async for snapshot in self._iter_portal_listings():
+                if self._stopping():
+                    return
+                portal_count += 1
+                yield snapshot
+            LOGGER.info("Portals: снимков продавца %s", portal_count)
+            if self._stopping():
+                return
+
+            self.stage = "getgems"
+            LOGGER.info("Getgems: HTTP-запрос лотов")
+            getgems_count = 0
+            async for snapshot in self._iter_getgems_listings():
+                if self._stopping():
+                    return
+                getgems_count += 1
+                yield snapshot
+            LOGGER.info("Getgems: снимков продавца %s", getgems_count)
             self.tracker.commit_scan()
             finished = True
             self.stage = "idle"
@@ -288,7 +390,9 @@ class GiftMarketScanner:
                     self._skipped_known += 1
                     continue
                 try:
-                    snapshot = await self._snapshot_from_telegram_lot(raw, users, price, ton_usd)
+                    snapshot = await self._snapshot_from_telegram_lot(
+                        raw, users, price, ton_usd, source="tg_market"
+                    )
                 except (RPCError, asyncio.TimeoutError) as exc:
                     LOGGER.info("лот %s %s: %s", title, slug or extra, exc)
                     continue
@@ -309,6 +413,8 @@ class GiftMarketScanner:
         users: dict[int, User],
         price: float,
         ton_usd: float,
+        *,
+        source: str = "tg_market",
     ) -> Optional[ProfileSnapshot]:
         started = time.perf_counter()
         unique, _regular = self.scanner._parse_saved_gift(raw)
@@ -323,7 +429,7 @@ class GiftMarketScanner:
         unique.on_resale = True
         unique.telegram_floor_ton = price
         unique.market_floor_ton = price
-        unique.market_source = "telegram_resale"
+        unique.market_source = "telegram_resale" if source == "tg_market" else source
         owner_id = _peer_user_id(getattr(raw, "owner_id", None))
         unique.seller_id = owner_id
         unique.seller_name = getattr(raw, "owner_name", None)
@@ -359,8 +465,167 @@ class GiftMarketScanner:
             cheap_gifts=[unique],
             ton_usd=ton_usd,
             processed_ms=elapsed,
-            source="tg_market",
-            fingerprint_key=f"tg_market:{unique.slug}:{price:.4f}",
+            source=source,
+            fingerprint_key=f"{source}:{unique.slug}:{price:.4f}",
+            captured_at=utcnow(),
+        )
+
+    async def _user_from_username(self, username: Optional[str]) -> Optional[User]:
+        """Публичный @username. Не резолвим числовые Telegram ID."""
+        if not username or not _USER_RE.match(username):
+            return None
+        key = username.lower()
+        if key in self._username_cache:
+            return self._username_cache[key]
+        try:
+            entity = await self.scanner._flood.call(
+                lambda: self.scanner.client.get_entity(username),
+                label=f"user:@{username}",
+            )
+        except (RPCError, asyncio.TimeoutError, ValueError) as exc:
+            LOGGER.info("username @%s: %s", username, exc)
+            entity = None
+        user = entity if isinstance(entity, User) and not getattr(entity, "bot", False) else None
+        self._username_cache[key] = user
+        return user
+
+    async def _unique_star_gift(self, slug: str) -> Optional[tuple[Any, dict[int, User]]]:
+        if GetUniqueStarGiftRequest is None or not slug:
+            return None
+        try:
+            request = GetUniqueStarGiftRequest(slug=slug)
+        except TypeError:
+            request = GetUniqueStarGiftRequest(slug)  # type: ignore[call-arg,misc]
+        result = await self.scanner._flood.call(
+            lambda: self.scanner.client(request),
+            label=f"unique:{slug}",
+        )
+        gift = getattr(result, "gift", None)
+        if gift is None:
+            return None
+        users = {
+            user.id: user
+            for user in (getattr(result, "users", None) or [])
+            if isinstance(user, User)
+        }
+        return gift, users
+
+    async def _iter_hydrated_listings(
+        self,
+        source: str,
+        items: list[dict[str, Any]],
+        ton_usd: float,
+    ) -> AsyncIterator[ProfileSnapshot]:
+        """Лоты внешних маркетов → slug/username → публичный профиль Telegram."""
+        for item in items[:EXTERNAL_LIMIT]:
+            if self._stopping():
+                return
+            slug = marketplace_slug(item)
+            extra = str(item.get("id") or item.get("gift_id") or item.get("address") or "")
+            key = self._lot_key(source, slug, extra)
+            if not self.tracker.should_process(key):
+                self._skipped_known += 1
+                continue
+            http_price = marketplace_http_price(item)
+            snapshot = None
+            if slug:
+                try:
+                    fetched = await self._unique_star_gift(slug)
+                except RPCError as exc:
+                    text = str(exc).upper()
+                    if "SLUG" in text:
+                        self.tracker.mark(key)
+                        continue
+                    LOGGER.info("getUniqueStarGift %s: %s", slug, exc)
+                except asyncio.TimeoutError:
+                    continue
+                if fetched is not None:
+                    raw, users = fetched
+                    price = listing_price_ton(
+                        raw,
+                        ton_usd=ton_usd,
+                        stars_usd=self.settings.stars_usd,
+                    ) or http_price
+                    if price is None:
+                        continue
+                    if price < self.live.floor_min_ton or price >= self.live.floor_max_ton:
+                        self.tracker.mark(key)
+                        continue
+                    self._tg_priced += 1
+                    snapshot = await self._snapshot_from_telegram_lot(
+                        raw, users, price, ton_usd, source=source
+                    )
+            if snapshot is None:
+                user = await self._user_from_username(marketplace_username(item))
+                if user is None:
+                    continue
+                snapshot = await self._snapshot_from_http_user(
+                    item, user, source, slug, ton_usd, http_price
+                )
+            if snapshot is None:
+                continue
+            if snapshot.metrics.stars_fetched:
+                self.tracker.mark(key)
+            yield snapshot
+
+    async def _snapshot_from_http_user(
+        self,
+        item: dict[str, Any],
+        user: User,
+        source: str,
+        slug: str,
+        ton_usd: float,
+        price: Optional[float],
+    ) -> Optional[ProfileSnapshot]:
+        if price is None:
+            return None
+        if price < self.live.floor_min_ton or price >= self.live.floor_max_ton:
+            return None
+        title = str(
+            item.get("name")
+            or item.get("gift_name")
+            or item.get("title")
+            or item.get("collection_name")
+            or source
+        )
+        number = item.get("gift_num") or item.get("number") or item.get("num")
+        unique = UniqueGift(
+            slug=slug or title,
+            title=title,
+            number=int(number) if number is not None else None,
+            on_resale=True,
+            market_floor_ton=price,
+            telegram_floor_ton=price,
+            market_source=source,
+            seller_id=user.id,
+            seller_name=user.username,
+        )
+        profile_uniques, regular = await self._load_profile_nfts(user, unique)
+        profile_uniques = profile_unique_gifts(profile_uniques, unique)
+        metrics = await self._metrics_for_seller(user, user.id, user.username)
+        metrics.activity_score = compute_activity_score(
+            username=metrics.username,
+            is_premium=metrics.is_premium,
+            is_verified=metrics.is_verified,
+            has_photo=metrics.has_photo,
+            bio=metrics.bio,
+            personal_channel_id=metrics.personal_channel_id,
+            common_chats_count=metrics.common_chats_count,
+            unique_gift_count=len(profile_uniques),
+            public_channel_count=metrics.public_channel_count,
+        )
+        return ProfileSnapshot(
+            metrics=metrics,
+            unique_gifts=profile_uniques,
+            regular_gifts=regular,
+            estimated_value_ton=price,
+            estimated_value_usd=price * ton_usd,
+            min_floor_ton=price,
+            cheap_gifts=[unique],
+            ton_usd=ton_usd,
+            processed_ms=0.0,
+            source=source,
+            fingerprint_key=f"{source}:{unique.slug}:{price:.4f}",
             captured_at=utcnow(),
         )
 
@@ -384,18 +649,8 @@ class GiftMarketScanner:
             LOGGER.warning("MRKT HTTP: %s — дальше Telegram", exc)
             cheap = []
         LOGGER.info("MRKT: лотов с маркета %s", len(cheap))
-        for item in cheap[:MRKT_LIMIT]:
-            if self._stopping():
-                return
-            slug = str(item.get("slug") or item.get("gift_id_string") or "")
-            extra = str(item.get("id") or item.get("gift_id") or "")
-            key = self._lot_key("mrkt", slug, extra)
-            if not self.tracker.should_process(key):
-                continue
-            snapshot = await self._snapshot_from_mrkt(item, ton_usd)
-            if snapshot is not None:
-                self.tracker.mark(key)
-                yield snapshot
+        async for snapshot in self._iter_hydrated_listings("mrkt", cheap, ton_usd):
+            yield snapshot
 
     async def _iter_tonnel_listings(self) -> AsyncIterator[ProfileSnapshot]:
         ton_usd = await self._ton_usd()
@@ -415,24 +670,48 @@ class GiftMarketScanner:
             LOGGER.warning("Tonnel HTTP: %s", exc)
             items = []
         LOGGER.info("Tonnel: кандидатов (новые+дешёвые): %s", len(items))
-        for item in items[:TONNEL_LIMIT]:
-            if self._stopping():
-                return
-            slug = str(item.get("slug") or "")
-            extra = str(item.get("gift_id") or item.get("id") or "")
-            if not slug:
-                name = str(item.get("name") or item.get("gift_name") or "")
-                num = item.get("gift_num") or item.get("number")
-                if name and num is not None:
-                    compact = "".join(part.capitalize() for part in name.split())
-                    slug = f"{compact}-{num}"
-            key = self._lot_key("tonnel", slug, extra)
-            if not self.tracker.should_process(key):
-                continue
-            snapshot = await self._snapshot_from_tonnel(item, ton_usd, slug)
-            if snapshot is not None:
-                self.tracker.mark(key)
-                yield snapshot
+        async for snapshot in self._iter_hydrated_listings("tonnel", items, ton_usd):
+            yield snapshot
+
+    async def _iter_portal_listings(self) -> AsyncIterator[ProfileSnapshot]:
+        ton_usd = await self._ton_usd()
+        try:
+            items = await asyncio.wait_for(
+                self.market.list_portal_gifts(
+                    self.live.floor_max_ton,
+                    min_ton=self.live.floor_min_ton,
+                ),
+                timeout=25,
+            )
+        except asyncio.TimeoutError:
+            LOGGER.warning("Portals HTTP timeout 25s")
+            items = []
+        except Exception as exc:
+            LOGGER.warning("Portals HTTP: %s", exc)
+            items = []
+        LOGGER.info("Portals: лотов с маркета %s", len(items))
+        async for snapshot in self._iter_hydrated_listings("portal", items, ton_usd):
+            yield snapshot
+
+    async def _iter_getgems_listings(self) -> AsyncIterator[ProfileSnapshot]:
+        ton_usd = await self._ton_usd()
+        try:
+            items = await asyncio.wait_for(
+                self.market.list_getgems_gifts(
+                    self.live.floor_max_ton,
+                    min_ton=self.live.floor_min_ton,
+                ),
+                timeout=25,
+            )
+        except asyncio.TimeoutError:
+            LOGGER.warning("Getgems HTTP timeout 25s")
+            items = []
+        except Exception as exc:
+            LOGGER.warning("Getgems HTTP: %s", exc)
+            items = []
+        LOGGER.info("Getgems: лотов с маркета %s", len(items))
+        async for snapshot in self._iter_hydrated_listings("getgems", items, ton_usd):
+            yield snapshot
 
     async def _snapshot_from_mrkt(self, item: dict[str, Any], ton_usd: float) -> Optional[ProfileSnapshot]:
         started = time.perf_counter()

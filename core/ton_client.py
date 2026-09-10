@@ -669,6 +669,122 @@ class TonMarketClient:
         LOGGER.info("Tonnel: уникальных лотов в диапазоне %s", len(merged))
         return list(merged.values())
 
+    async def list_portal_gifts(
+        self,
+        max_ton: float,
+        *,
+        min_ton: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Portals (portal-market.com): дешёвые listed NFT-подарки."""
+        headers = {
+            "Origin": "https://portal-market.com",
+            "Referer": "https://portal-market.com/",
+            "Accept": "application/json",
+        }
+        token = (getattr(self.settings, "portal_auth_token", "") or "").strip()
+        if token:
+            if not token.lower().startswith("tma "):
+                token = f"tma {token}"
+            headers["Authorization"] = token
+        merged: dict[str, dict[str, Any]] = {}
+        for offset in (0, 50):
+            params = {
+                "offset": offset,
+                "limit": 50,
+                "sort_by": "price_asc",
+                "status": "listed",
+                "min_price": max(0, int(min_ton)),
+                "max_price": max(1, int(max_ton) if max_ton >= 1 else 10),
+            }
+            try:
+                payload = await self.http.request_json(
+                    "GET",
+                    f"{self.settings.portal_api_url.rstrip('/')}/nfts/search",
+                    headers=headers,
+                    params=params,
+                )
+            except Exception as exc:
+                LOGGER.warning("Portals nfts/search: %s", exc)
+                break
+            if payload is None:
+                LOGGER.info("Portals: нет доступа к витрине (нужен PORTAL_AUTH_TOKEN)")
+                break
+            gifts: list[Any] = []
+            if isinstance(payload, list):
+                gifts = payload
+            elif isinstance(payload, dict):
+                gifts = payload.get("results") or payload.get("nfts") or payload.get("items") or []
+            if not gifts:
+                break
+            for gift in gifts:
+                if not isinstance(gift, dict):
+                    continue
+                price = to_ton(
+                    gift.get("price")
+                    or gift.get("sale_price")
+                    or gift.get("floor_price")
+                )
+                if price is None or price < min_ton or price >= max_ton:
+                    continue
+                key = str(
+                    gift.get("slug")
+                    or gift.get("id")
+                    or gift.get("tg_id")
+                    or gift.get("name")
+                    or ""
+                )
+                if key:
+                    merged[key] = gift
+        LOGGER.info("Portals: уникальных лотов в диапазоне %s", len(merged))
+        return list(merged.values())
+
+    async def list_getgems_gifts(
+        self,
+        max_ton: float,
+        *,
+        min_ton: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Getgems: публичные on-sale карточки, из имени собираем slug Telegram."""
+        base = self.settings.getgems_api_url.rstrip("/")
+        headers = self._getgems_headers()
+        merged: dict[str, dict[str, Any]] = {}
+        endpoints = (
+            f"{base}/public-api/v1/nfts",
+            f"{base}/public-api/v1.2/nfts",
+        )
+        payload: Any = None
+        for url in endpoints:
+            try:
+                payload = await self.http.request_json(
+                    "GET",
+                    url,
+                    headers=headers,
+                    params={"limit": 50, "on_sale": "true"},
+                )
+            except Exception as exc:
+                LOGGER.info("Getgems %s: %s", url, exc)
+                payload = None
+                continue
+            if payload is not None:
+                break
+        items = self._as_items(payload)
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            card = self._extract_nft_card(item)
+            price = card.get("price_ton")
+            if not isinstance(price, (int, float)) or price < min_ton or price >= max_ton:
+                continue
+            row = dict(item)
+            row["price_ton"] = float(price)
+            row["name"] = card.get("name") or row.get("name")
+            row["title"] = row.get("name")
+            key = str(row.get("address") or row.get("name") or "")
+            if key:
+                merged[key] = row
+        LOGGER.info("Getgems: лотов в диапазоне %s", len(merged))
+        return list(merged.values())
+
     async def list_cheap_gifts(self, max_ton: float, *, max_pages: int = 10) -> list[dict[str, Any]]:
         """Все активные лоты MRKT дешевле порога, цена по возрастанию."""
         nano = int(max_ton * NANOTON)

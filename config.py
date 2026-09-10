@@ -91,18 +91,19 @@ class Settings(BaseSettings):
         default="https://portal-market.com/api",
         validation_alias=AliasChoices("PORTAL_API_URL"),
     )
+    portal_auth_token: str = Field(default="", validation_alias=AliasChoices("PORTAL_AUTH_TOKEN"))
 
     # --- Фильтры исследования ---
-    floor_threshold_ton: float = Field(default=15.0, ge=0.0, validation_alias=AliasChoices("FLOOR_THRESHOLD_TON"))
+    floor_threshold_ton: float = Field(default=10.0, ge=0.0, validation_alias=AliasChoices("FLOOR_THRESHOLD_TON"))
     min_unique_gifts: int = Field(default=1, ge=0, validation_alias=AliasChoices("MIN_UNIQUE_GIFTS"))
     max_unique_gifts: int = Field(
-        default=5,
+        default=2,
         ge=1,
         validation_alias=AliasChoices("MAX_UNIQUE_GIFTS"),
         description="Максимум unique NFT в публичном профиле продавца.",
     )
     max_account_age_days: Optional[int] = Field(
-        default=365,
+        default=90,
         validation_alias=AliasChoices("MAX_ACCOUNT_AGE_DAYS"),
         description="None / 0 — не фильтровать по возрасту аккаунта.",
     )
@@ -112,7 +113,7 @@ class Settings(BaseSettings):
         description="None — не фильтровать, True/False — требовать конкретное значение.",
     )
     min_activity_score: int = Field(default=0, ge=0, le=100, validation_alias=AliasChoices("MIN_ACTIVITY_SCORE"))
-    alert_cooldown_hours: int = Field(default=2, ge=1, validation_alias=AliasChoices("ALERT_COOLDOWN_HOURS"))
+    alert_cooldown_hours: int = Field(default=24, ge=1, validation_alias=AliasChoices("ALERT_COOLDOWN_HOURS"))
 
     # --- Скорость и лимиты ---
     telegram_concurrency: int = Field(default=3, ge=1, le=16, validation_alias=AliasChoices("TELEGRAM_CONCURRENCY"))
@@ -120,7 +121,7 @@ class Settings(BaseSettings):
     http_timeout_sec: float = Field(default=25.0, ge=5.0, validation_alias=AliasChoices("HTTP_TIMEOUT_SEC"))
     http_max_retries: int = Field(default=5, ge=1, le=12, validation_alias=AliasChoices("HTTP_MAX_RETRIES"))
     gift_page_size: int = Field(default=50, ge=1, le=100, validation_alias=AliasChoices("GIFT_PAGE_SIZE"))
-    market_poll_sec: int = Field(default=20, ge=15, le=600, validation_alias=AliasChoices("MARKET_POLL_SEC"))
+    market_poll_sec: int = Field(default=45, ge=15, le=600, validation_alias=AliasChoices("MARKET_POLL_SEC"))
     stars_usd: float = Field(default=0.013, ge=0.0, validation_alias=AliasChoices("STARS_USD"))
     filter_market_seller_age: bool = Field(
         default=False,

@@ -74,7 +74,7 @@ def _menu_text(live: LiveFilters) -> str:
         f"{e('spark')} Настройки видны только вам.\n\n"
         f"{lines}\n\n"
         f"{e('chat')} Чат: <a href=\"https://t.me/BYRMALDAEVO\">BYRMALDAEVO</a>\n"
-        f"{e('warn')} Ищем дешёвые лоты у новичков: мало NFT, рейтинг 0–2 или без рейтинга.\n"
+        f"{e('warn')} Рейтинг — уровень Stars из профиля Telegram (как «Уровень 1»).\n"
         f"Нажмите кнопку, чтобы сменить значение."
     )
 
@@ -84,9 +84,9 @@ def _prompts() -> dict[str, str]:
         "floor_min_ton": "Мин. цена лота в TON (например 0 или 1.5)",
         "floor_max_ton": "Макс. цена лота в TON (например 10)",
         "min_unique_gifts": "Минимум unique NFT в профиле (целое)",
-        "max_unique_gifts": "Максимум unique NFT в профиле (целое)",
-        "stars_rating_min": "Мин. уровень Stars-рейтинга (0 = без рейтинга тоже ок)",
-        "stars_rating_max": "Макс. уровень Stars-рейтинга (2 = новички, без коллекционеров)",
+        "max_unique_gifts": "Максимум unique NFT в профиле (целое, сейчас 2)",
+        "stars_rating_min": "Мин. уровень Stars-рейтинга (1 = новичок)",
+        "stars_rating_max": "Макс. уровень Stars-рейтинга (1 = только первый уровень)",
         "max_account_age_days": "Макс. возраст аккаунта в днях (0 = выключить фильтр)",
         "min_activity_score": "Мин. эвристика активности 0–100 (0 = выкл)",
         "market_poll_sec": "Пауза между кругами маркета, секунды (15–600)",
