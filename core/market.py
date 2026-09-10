@@ -1,14 +1,8 @@
 """
-Сканер встроенного маркета Telegram Gifts и MRKT.
+Сканер встроенного маркета Telegram Gifts.
 
-Цикл:
-1. MRKT HTTP (быстро, без Telethon).
-2. Telegram: только дешёвая страница каждой коллекции, продавцы из result.users.
-3. Tonnel HTTP.
-4. Фильтр: рейтинг ур.1, ≤2 NFT, молодой аккаунт, цена в диапазоне.
-
-Не вызываем get_entity по каждому seller_id — это ловит FloodWait на минуты
-и выглядит как «сканер ничего не ищет».
+Полный обход ресейла: все коллекции, свежие лоты + все дешёвые в диапазоне цены.
+Продавцы берутся из result.users (без get_entity по ID).
 """
 
 from __future__ import annotations
@@ -31,7 +25,8 @@ from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
-PROFILE_CAP = 40
+CHEAP_PAGES = 4
+NEW_PAGES = 1
 
 
 def _peer_user_id(peer: Any) -> Optional[int]:
@@ -84,8 +79,6 @@ class GiftMarketScanner:
         self.tracker = ListingTracker()
         self._skipped_known = 0
         self._tg_priced = 0
-        self._catalog_cursor = 0
-        self._profiles_this_pass = 0
         self._seller_cache: dict[int, tuple[AccountMetrics, list[UniqueGift], list]] = {}
         self.stage = "idle"
 
@@ -116,7 +109,6 @@ class GiftMarketScanner:
         telegram_count = 0
         self._skipped_known = 0
         self._tg_priced = 0
-        self._profiles_this_pass = 0
         self._seller_cache = {}
         finished = False
         LOGGER.info(
@@ -177,12 +169,7 @@ class GiftMarketScanner:
                 self.tracker.discard_partial()
 
     async def _iter_telegram_resale(self) -> AsyncIterator[ProfileSnapshot]:
-        client = self.scanner.client
-        for _ in range(6):
-            if client.is_connected():
-                break
-            await asyncio.sleep(0.5)
-        if not client.is_connected():
+        if not self.scanner.client.is_connected():
             LOGGER.warning("Telegram клиент не подключён — пропускаю встроенный маркет")
             return
         catalog = await self._gift_catalog()
@@ -193,50 +180,27 @@ class GiftMarketScanner:
             or getattr(item, "sold_out", False)
             or getattr(item, "limited", False)
         ]
+        if not resale_types:
+            resale_types = list(catalog)
         LOGGER.info("Каталог Telegram Gifts: %s типов, к ресейлу %s", len(catalog), len(resale_types))
         ton_usd = await self._ton_usd()
         total = len(resale_types)
-        if not total:
-            return
-        start = self._catalog_cursor % total
-        for step in range(total):
+        for index, base in enumerate(resale_types, start=1):
             if self._stopping():
                 return
-            if self._profiles_this_pass >= PROFILE_CAP:
-                self._catalog_cursor = (start + step) % total
-                LOGGER.info(
-                    "Telegram: лимит %s профилей за проход, курсор %s/%s",
-                    PROFILE_CAP,
-                    self._catalog_cursor + 1,
-                    total,
-                )
-                return
-            index = (start + step) % total
-            base = resale_types[index]
             gift_id = int(getattr(base, "id", 0) or 0)
             title = str(getattr(base, "title", "") or gift_id)
             if not gift_id:
                 continue
-            if step == 0 or (step + 1) % 5 == 0:
-                LOGGER.info("Telegram market %s/%s: %s", index + 1, total, title)
-            self.stage = f"telegram {index + 1}/{total} {title}"
+            LOGGER.info("Telegram market %s/%s: %s", index, total, title)
+            self.stage = f"telegram {index}/{total} {title}"
             try:
-                async for snapshot in self._resale_cheap(gift_id, title, ton_usd):
+                async for snapshot in self._resale_collection(gift_id, title, ton_usd):
                     yield snapshot
-                    if self._profiles_this_pass >= PROFILE_CAP:
-                        self._catalog_cursor = index
-                        LOGGER.info(
-                            "Telegram: лимит %s профилей за проход, курсор %s/%s",
-                            PROFILE_CAP,
-                            index + 1,
-                            total,
-                        )
-                        return
             except (RPCError, asyncio.TimeoutError, asyncio.CancelledError) as exc:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 LOGGER.warning("resale %s (%s): %s", title, gift_id, exc)
-        self._catalog_cursor = 0
 
     async def _gift_catalog(self) -> list[Any]:
         try:
@@ -250,65 +214,84 @@ class GiftMarketScanner:
         gifts = getattr(result, "gifts", None) or []
         return list(gifts)
 
-    async def _resale_cheap(
+    async def _resale_collection(
         self,
         gift_id: int,
         title: str,
         ton_usd: float,
     ) -> AsyncIterator[ProfileSnapshot]:
-        """Одна страница самых дешёвых. Дальше порога цены не идём."""
-        result = await self.scanner._flood.call(
-            lambda: self.scanner.client(
-                GetResaleStarGiftsRequest(
-                    gift_id=gift_id,
-                    offset="",
-                    limit=min(50, self.settings.gift_page_size),
-                    sort_by_price=True,
-                )
-            ),
-            label=f"resale:{gift_id}:price",
-        )
-        users = {
-            user.id: user
-            for user in (getattr(result, "users", None) or [])
-            if isinstance(user, User)
-        }
-        gifts = getattr(result, "gifts", None) or []
-        attempted = 0
-        for raw in gifts:
+        async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=False, max_pages=NEW_PAGES):
+            yield snapshot
+        async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=True, max_pages=CHEAP_PAGES):
+            yield snapshot
+
+    async def _resale_pages(
+        self,
+        gift_id: int,
+        title: str,
+        ton_usd: float,
+        *,
+        sort_by_price: bool,
+        max_pages: int,
+    ) -> AsyncIterator[ProfileSnapshot]:
+        offset = ""
+        for _page in range(max_pages):
             if self._stopping():
                 return
-            price = listing_price_ton(
-                raw,
-                ton_usd=ton_usd,
-                stars_usd=self.settings.stars_usd,
+            result = await self.scanner._flood.call(
+                lambda off=offset: self.scanner.client(
+                    GetResaleStarGiftsRequest(
+                        gift_id=gift_id,
+                        offset=off,
+                        limit=min(50, self.settings.gift_page_size),
+                        sort_by_price=True if sort_by_price else None,
+                    )
+                ),
+                label=f"resale:{gift_id}:{'price' if sort_by_price else 'new'}",
             )
-            if price is None:
-                continue
-            if price < self.live.floor_min_ton:
-                continue
-            if price >= self.live.floor_max_ton:
-                break
-            self._tg_priced += 1
-            slug = str(getattr(raw, "slug", "") or "")
-            extra = f"{gift_id}:{getattr(raw, 'num', '')}:{getattr(raw, 'id', '')}"
-            key = self._lot_key("tg", slug, extra)
-            if not self.tracker.should_process(key):
-                self._skipped_known += 1
-                continue
-            if self._profiles_this_pass >= PROFILE_CAP:
+            users = {
+                user.id: user
+                for user in (getattr(result, "users", None) or [])
+                if isinstance(user, User)
+            }
+            gifts = getattr(result, "gifts", None) or []
+            stop_price = False
+            for raw in gifts:
+                if self._stopping():
+                    return
+                price = listing_price_ton(
+                    raw,
+                    ton_usd=ton_usd,
+                    stars_usd=self.settings.stars_usd,
+                )
+                if price is None:
+                    continue
+                if price < self.live.floor_min_ton or price >= self.live.floor_max_ton:
+                    if sort_by_price and price >= self.live.floor_max_ton:
+                        stop_price = True
+                        break
+                    continue
+                self._tg_priced += 1
+                slug = str(getattr(raw, "slug", "") or "")
+                extra = f"{gift_id}:{getattr(raw, 'num', '')}:{getattr(raw, 'id', '')}"
+                key = self._lot_key("tg", slug, extra)
+                if not self.tracker.should_process(key):
+                    self._skipped_known += 1
+                    continue
+                try:
+                    snapshot = await self._snapshot_from_telegram_lot(raw, users, price, ton_usd)
+                except (RPCError, asyncio.TimeoutError) as exc:
+                    LOGGER.info("лот %s %s: %s", title, slug or extra, exc)
+                    continue
+                if snapshot is not None:
+                    self.tracker.mark(key)
+                    yield snapshot
+            if stop_price:
                 return
-            try:
-                snapshot = await self._snapshot_from_telegram_lot(raw, users, price, ton_usd)
-            except (RPCError, asyncio.TimeoutError) as exc:
-                LOGGER.info("лот %s %s: %s", title, slug or extra, exc)
-                continue
-            if snapshot is not None:
-                self.tracker.mark(key)
-                yield snapshot
-            attempted += 1
-            if attempted >= 12:
-                break
+            next_offset = str(getattr(result, "next_offset", "") or "")
+            if not next_offset or next_offset == offset or not gifts:
+                return
+            offset = next_offset
 
     async def _snapshot_from_telegram_lot(
         self,
@@ -343,7 +326,6 @@ class GiftMarketScanner:
             metrics = await self._metrics_for_seller(user, owner_id, unique.seller_name)
             if owner_id:
                 self._seller_cache[int(owner_id)] = (metrics, profile_uniques, regular)
-            self._profiles_this_pass += 1
         if unique.slug and all(item.slug != unique.slug for item in profile_uniques):
             profile_uniques = [*profile_uniques, unique]
         metrics.activity_score = compute_activity_score(

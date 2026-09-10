@@ -26,7 +26,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260910-6"
+BUILD = "20260910-7"
 
 
 def setup_logging() -> None:
