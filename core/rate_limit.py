@@ -160,13 +160,8 @@ class HttpClient:
                         )
                     if response.status >= 400:
                         body = await response.text()
-                        raise ClientResponseError(
-                            response.request_info,
-                            response.history,
-                            status=response.status,
-                            message=body[:300],
-                            headers=response.headers,
-                        )
+                        LOGGER.warning("HTTP %s %s: %s", response.status, url, body[:200])
+                        return None
                     if accept_text:
                         return await response.text()
                     if response.content_type and "json" not in response.content_type:

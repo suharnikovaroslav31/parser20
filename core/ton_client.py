@@ -600,13 +600,17 @@ class TonMarketClient:
             "price": {"$exists": True},
             "refunded": {"$ne": True},
             "buyer": {"$exists": False},
+            "export_at": {"$exists": True},
             "asset": "TON",
         }
+        lo = max(0, int(min_ton))
+        hi = max(lo + 1, int(max_ton) if max_ton >= 1 else 10)
         sorts = (
             {"message_post_time": -1, "gift_id": -1},
             {"price": 1, "gift_id": -1},
         )
         merged: dict[str, dict[str, Any]] = {}
+        range_value: list[int] | None = [lo, hi]
         for sort in sorts:
             for page in range(1, max_pages + 1):
                 body = {
@@ -614,7 +618,7 @@ class TonMarketClient:
                     "limit": 30,
                     "sort": json.dumps(sort),
                     "filter": json.dumps(common_filter),
-                    "price_range": f"{min_ton}-{max_ton}",
+                    "price_range": range_value,
                     "user_auth": "",
                 }
                 try:
@@ -626,7 +630,23 @@ class TonMarketClient:
                     )
                 except Exception as exc:
                     LOGGER.warning("Tonnel pageGifts: %s", exc)
-                    return list(merged.values())
+                    break
+                if payload is None and range_value is not None:
+                    LOGGER.info("Tonnel: price_range отклонён, запрашиваю без него")
+                    range_value = None
+                    body["price_range"] = None
+                    try:
+                        payload = await self.http.request_json(
+                            "POST",
+                            f"{base}/api/pageGifts",
+                            headers=headers,
+                            json_body=body,
+                        )
+                    except Exception as exc:
+                        LOGGER.warning("Tonnel pageGifts: %s", exc)
+                        break
+                if payload is None:
+                    break
                 gifts: list[Any] = []
                 if isinstance(payload, list):
                     gifts = payload
