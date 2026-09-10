@@ -177,6 +177,14 @@ class GiftMarketScanner:
                 self.tracker.discard_partial()
 
     async def _iter_telegram_resale(self) -> AsyncIterator[ProfileSnapshot]:
+        client = self.scanner.client
+        for _ in range(6):
+            if client.is_connected():
+                break
+            await asyncio.sleep(0.5)
+        if not client.is_connected():
+            LOGGER.warning("Telegram клиент не подключён — пропускаю встроенный маркет")
+            return
         catalog = await self._gift_catalog()
         resale_types = [
             item

@@ -73,11 +73,14 @@ def _user_display(user: User) -> str:
 
 
 class TelegramFloodControl:
-    """Централизованная обработка FloodWaitError с уважением к `seconds`."""
+    """FloodWait и зависшие RPC: не спим минутами, при timeout переподключаемся."""
 
     def __init__(self, limiter: AsyncRateLimiter) -> None:
         self.limiter = limiter
+        self.client: Optional[TelegramClient] = None
         self.stop_event: Optional[asyncio.Event] = None
+        self._reconnect_lock = asyncio.Lock()
+        self._last_reconnect = 0.0
 
     def _stopping(self) -> bool:
         return self.stop_event is not None and self.stop_event.is_set()
@@ -94,17 +97,38 @@ class TelegramFloodControl:
             return
         raise asyncio.CancelledError
 
+    async def _recover(self, label: str) -> None:
+        client = self.client
+        if client is None:
+            return
+        if time.monotonic() - self._last_reconnect < 20:
+            return
+        async with self._reconnect_lock:
+            if time.monotonic() - self._last_reconnect < 20:
+                return
+            self._last_reconnect = time.monotonic()
+            LOGGER.warning("Telegram reconnect после зависания %s", label)
+            try:
+                await asyncio.wait_for(client.disconnect(), timeout=3)
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(client.connect(), timeout=12)
+            except Exception as exc:
+                LOGGER.warning("reconnect не удался: %s", exc)
+
     async def call(self, factory, *, retries: int = 1, label: str = "rpc") -> Any:
         last_error: BaseException | None = None
         for attempt in range(retries):
             if self._stopping():
                 raise asyncio.CancelledError
             try:
-                return await asyncio.wait_for(self.limiter.run(factory), timeout=8)
+                return await asyncio.wait_for(self.limiter.run(factory), timeout=10)
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError as exc:
-                LOGGER.warning("Telegram timeout 8s %s — пропускаю", label)
+                LOGGER.warning("Telegram timeout 10s %s — пропускаю", label)
+                await self._recover(label)
                 last_error = exc
                 break
             except FloodWaitError as exc:
@@ -153,8 +177,14 @@ class ProfileScanner:
             device_model="TG-Gifts Analytics",
             system_version="Windows 10",
             app_version="1.0.0",
-            flood_sleep_threshold=0,  # обрабатываем FloodWait сами, без скрытого sleep
+            timeout=10,
+            request_retries=0,
+            connection_retries=1,
+            retry_delay=1,
+            auto_reconnect=True,
+            flood_sleep_threshold=0,
         )
+        self._flood.client = self.client
 
     async def login_interactive(self) -> None:
         """Первичная авторизация MTProto (телефон + код). Нужен один раз."""
@@ -164,14 +194,13 @@ class ProfileScanner:
         LOGGER.info("TELEGRAM_SESSION=%s", StringSession.save(self.client.session))
 
     async def start(self) -> None:
-        await self.client.connect()
+        await asyncio.wait_for(self.client.connect(), timeout=20)
         if not await self.client.is_user_authorized():
             raise RuntimeError(
                 "Telethon-сессия не авторизована. Выполните: python main.py --login"
             )
-        me = await self.client.get_me()
+        me = await asyncio.wait_for(self.client.get_me(), timeout=15)
         LOGGER.info("MTProto клиент вошёл как %s id=%s", _user_display(me), me.id)
-        self._register_live_handlers()
 
     async def close(self) -> None:
         if self.client.is_connected():

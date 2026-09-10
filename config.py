@@ -60,7 +60,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("DATABASE_URL"),
     )
     redis_url: str = Field(
-        default="redis://127.0.0.1:6379/0",
+        default="",
         validation_alias=AliasChoices("REDIS_URL"),
     )
 

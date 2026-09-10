@@ -10,6 +10,7 @@ import logging
 import os
 import signal
 import sys
+import time
 import warnings
 from typing import Optional
 
@@ -26,14 +27,33 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
+BUILD = "20260910-5"
 
 
 def setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    try:
+        sys.stdout.reconfigure(line_buffering=True, write_through=True)
+        sys.stderr.reconfigure(line_buffering=True, write_through=True)
+    except Exception:
+        pass
+
+    class _Flush(logging.StreamHandler):
+        def emit(self, record: logging.LogRecord) -> None:
+            super().emit(record)
+            self.flush()
+
+    handler = _Flush(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     )
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(logging.INFO)
+    root.addHandler(handler)
     logging.getLogger("telethon").setLevel(logging.WARNING)
     logging.getLogger("aiohttp").setLevel(logging.WARNING)
     logging.getLogger("aiogram").setLevel(logging.WARNING)
@@ -58,6 +78,7 @@ class AnalyticsApp:
         self._sigint = 0
         self._seen = 0
         self._matched = 0
+        self._tg_ok = False
         self._tasks: list[asyncio.Task] = []
 
     def request_stop(self, *_args: object) -> None:
@@ -72,11 +93,18 @@ class AnalyticsApp:
             os._exit(0)
 
     async def start(self) -> None:
-        await self.storage.start()
-        await self.market.http.start()
-        await self.scanner.start()
+        await self._status(f"сканер {BUILD} жив, поднимаю сервисы")
+        try:
+            await asyncio.wait_for(self.storage.start(), timeout=8)
+        except Exception as exc:
+            LOGGER.warning("storage start: %s", exc)
+        try:
+            await self.market.http.start()
+        except Exception as exc:
+            LOGGER.warning("http start: %s", exc)
         LOGGER.info(
-            "Маркет + бот | рейтинг %s–%s | NFT %s–%s | лот %s–%s TON",
+            "build %s | рейтинг %s–%s | NFT %s–%s | лот %s–%s TON",
+            BUILD,
             self.live.stars_rating_min,
             self.live.stars_rating_max,
             self.live.min_unique_gifts,
@@ -84,15 +112,27 @@ class AnalyticsApp:
             self.live.floor_min_ton,
             self.live.floor_max_ton,
         )
+
+    async def _connect_telegram(self) -> None:
         try:
-            await self.bot.send_message(
-                ADMIN_ID,
-                "Сканер запущен. /admin — панель фильтров.\n"
-                "Чат: https://t.me/BYRMALDAEVO",
-                disable_web_page_preview=True,
-            )
+            await asyncio.wait_for(self.scanner.start(), timeout=25)
+            self._tg_ok = True
+            await self._status(f"{BUILD} telegram ок, сканирую гифты")
         except Exception as exc:
-            LOGGER.info("Не отправил старт админу (напишите боту /start): %s", exc)
+            self._tg_ok = False
+            LOGGER.exception("telegram start")
+            await self._status(f"{BUILD} telegram не поднялся: {type(exc).__name__}")
+
+    async def _status(self, text: str) -> None:
+        LOGGER.info("%s", text)
+        for chat in (self.settings.log_group_id, ADMIN_ID):
+            try:
+                await asyncio.wait_for(
+                    self.bot.send_message(chat, text, disable_web_page_preview=True),
+                    timeout=6,
+                )
+            except Exception as exc:
+                LOGGER.info("статус chat=%s: %s", chat, exc)
 
     async def close(self) -> None:
         LOGGER.info("Закрываю соединения...")
@@ -159,18 +199,28 @@ class AnalyticsApp:
             LOGGER.error("MATCH user=%s, карточка в группу не ушла", snapshot.metrics.user_id)
 
     async def _scan_loop(self, live: bool) -> None:
+        last_group = 0.0
+
         async def _heartbeat() -> None:
+            nonlocal last_group
             while not self._stop.is_set():
                 try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=12)
+                    await asyncio.wait_for(self._stop.wait(), timeout=15)
                     return
                 except asyncio.TimeoutError:
+                    stage = getattr(self.markets, "stage", "?")
                     LOGGER.info(
                         "Сканер жив | %s | seen=%s matched=%s",
-                        getattr(self.markets, "stage", "?"),
+                        stage,
                         self._seen,
                         self._matched,
                     )
+                    now = time.monotonic()
+                    if now - last_group >= 45:
+                        last_group = now
+                        await self._status(
+                            f"ищу · {stage} · проверено {self.filters.checked} · MATCH {self.filters.matched}"
+                        )
 
         beat = asyncio.create_task(_heartbeat(), name="scan-heartbeat")
         try:
@@ -183,6 +233,7 @@ class AnalyticsApp:
                         continue
                     continue
                 LOGGER.info("Старт прохода Telegram Gift Market + MRKT")
+                await self._status(f"{BUILD} проход начат")
                 self.filters.reset_stats()
                 try:
                     async for snapshot in self.markets.iter_offers():
@@ -193,8 +244,10 @@ class AnalyticsApp:
                     raise
                 except Exception:
                     LOGGER.exception("Ошибка прохода по маркету")
-                LOGGER.info("Фильтры за проход: %s", self.filters.dump_stats())
+                stats = self.filters.dump_stats()
+                LOGGER.info("Фильтры за проход: %s", stats)
                 LOGGER.info("Проход: seen=%s matched=%s", self._seen, self._matched)
+                await self._status(f"проход: {stats}")
                 if not live or self._stop.is_set():
                     break
                 try:
@@ -210,13 +263,15 @@ class AnalyticsApp:
             self.dispatcher.start_polling(self.bot, handle_signals=False),
             name="aiogram-polling",
         )
+        tg_task = asyncio.create_task(self._connect_telegram(), name="telegram-connect")
         scan_task = asyncio.create_task(self._scan_loop(live), name="market-scan")
-        self._tasks = [poll_task, scan_task]
+        self._tasks = [poll_task, tg_task, scan_task]
         stopper = asyncio.create_task(self._stop.wait(), name="stop-wait")
         try:
             if live:
                 await stopper
             else:
+                await tg_task
                 await scan_task
                 self._stop.set()
         except asyncio.CancelledError:
@@ -226,8 +281,9 @@ class AnalyticsApp:
             self._stop.set()
             stopper.cancel()
             scan_task.cancel()
+            tg_task.cancel()
             poll_task.cancel()
-            await asyncio.gather(scan_task, poll_task, stopper, return_exceptions=True)
+            await asyncio.gather(scan_task, poll_task, tg_task, stopper, return_exceptions=True)
             await self.close()
             LOGGER.info("Бот остановлен")
             if sys.platform == "win32":
@@ -291,19 +347,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def main() -> None:
+    print(f"tg-gifts {BUILD}", flush=True)
     setup_logging()
     args = parse_args()
     if sys.platform == "win32":
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=DeprecationWarning)
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    else:
-        try:
-            import uvloop
-
-            uvloop.install()
-        except ImportError:
-            pass
     try:
         if args.login:
             asyncio.run(_login())

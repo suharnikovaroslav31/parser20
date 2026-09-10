@@ -8,6 +8,7 @@ SQLite включается через DATABASE_URL=sqlite+aiosqlite:///./data/t
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -75,16 +76,32 @@ class Storage:
         self._redis_ok = False
 
     async def start(self) -> None:
-        async with self._engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
         try:
-            self._redis = Redis.from_url(self._redis_url, encoding="utf-8", decode_responses=True)
-            await self._redis.ping()
+            await asyncio.wait_for(self._create_schema(), timeout=6)
+        except Exception as exc:
+            LOGGER.warning("БД не открылась (%s) — работаем без истории", exc)
+        url = (self._redis_url or "").strip()
+        if not url:
+            LOGGER.info("Redis не задан — in-memory кэш")
+            return
+        try:
+            self._redis = Redis.from_url(
+                url,
+                encoding="utf-8",
+                decode_responses=True,
+                socket_connect_timeout=1,
+                socket_timeout=1,
+            )
+            await asyncio.wait_for(self._redis.ping(), timeout=2)
             self._redis_ok = True
-            LOGGER.info("Redis подключён: %s", self._redis_url)
+            LOGGER.info("Redis подключён")
         except Exception as exc:
             self._redis_ok = False
-            LOGGER.warning("Redis недоступен (%s) — используем in-memory кэш", exc)
+            LOGGER.warning("Redis недоступен (%s) — in-memory кэш", exc)
+
+    async def _create_schema(self) -> None:
+        async with self._engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
     async def close(self) -> None:
         if self._redis is not None:
