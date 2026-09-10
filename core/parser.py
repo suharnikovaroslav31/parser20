@@ -117,23 +117,28 @@ class TelegramFloodControl:
             except Exception as exc:
                 LOGGER.warning("reconnect не удался: %s", exc)
 
-    async def call(self, factory, *, retries: int = 1, label: str = "rpc") -> Any:
+    async def call(self, factory, *, retries: int = 3, label: str = "rpc") -> Any:
         last_error: BaseException | None = None
         for attempt in range(retries):
             if self._stopping():
                 raise asyncio.CancelledError
             try:
-                return await asyncio.wait_for(self.limiter.run(factory), timeout=10)
+                return await asyncio.wait_for(self.limiter.run(factory), timeout=20)
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError as exc:
-                LOGGER.warning("Telegram timeout 10s %s — пропускаю", label)
+                LOGGER.warning("Telegram timeout 20s %s — reconnect", label)
                 await self._recover(label)
                 last_error = exc
-                break
+                continue
             except FloodWaitError as exc:
                 wait = int(getattr(exc, "seconds", 1) or 1)
-                LOGGER.warning("Telegram FloodWait %s %ss — пропускаю, не сплю", label, wait)
+                if wait <= 8 and attempt + 1 < retries:
+                    LOGGER.warning("Telegram FloodWait %s: пауза %ss", label, wait)
+                    await self._sleep(wait)
+                    last_error = exc
+                    continue
+                LOGGER.warning("Telegram FloodWait %s %ss — пропускаю", label, wait)
                 raise
             except RPCError as exc:
                 message = str(exc).upper()
@@ -420,7 +425,7 @@ class ProfileScanner:
                 "offset": offset,
                 "limit": self.settings.gift_page_size,
             }
-            if "exclude_unsaved" in supported:
+            if "exclude_unsaved" in supported and stop_after_unique is None:
                 kwargs["exclude_unsaved"] = True
             try:
                 result = await self._flood.call(

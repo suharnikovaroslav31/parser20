@@ -130,18 +130,6 @@ class GiftMarketScanner:
             self.live.max_account_age_days if self.live.filter_seller_age else "выкл",
         )
         try:
-            self.stage = "mrkt"
-            LOGGER.info("MRKT: HTTP-запрос лотов, без Mini App")
-            mrkt_count = 0
-            async for snapshot in self._iter_mrkt_listings():
-                if self._stopping():
-                    return
-                mrkt_count += 1
-                yield snapshot
-            LOGGER.info("MRKT: снимков продавца %s", mrkt_count)
-            if self._stopping():
-                return
-
             self.stage = "telegram-catalog"
             LOGGER.info("Telegram: каталог коллекций")
             async for snapshot in self._iter_telegram_resale():
@@ -155,6 +143,18 @@ class GiftMarketScanner:
                 telegram_count,
                 self._skipped_known,
             )
+            if self._stopping():
+                return
+
+            self.stage = "mrkt"
+            LOGGER.info("MRKT: HTTP-запрос лотов")
+            mrkt_count = 0
+            async for snapshot in self._iter_mrkt_listings():
+                if self._stopping():
+                    return
+                mrkt_count += 1
+                yield snapshot
+            LOGGER.info("MRKT: снимков продавца %s", mrkt_count)
             if self._stopping():
                 return
 
@@ -344,6 +344,8 @@ class GiftMarketScanner:
             if owner_id:
                 self._seller_cache[int(owner_id)] = (metrics, profile_uniques, regular)
             self._profiles_this_pass += 1
+        if unique.slug and all(item.slug != unique.slug for item in profile_uniques):
+            profile_uniques = [*profile_uniques, unique]
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
             is_premium=metrics.is_premium,
