@@ -199,5 +199,13 @@ class NanotonTests(unittest.TestCase):
         self.assertEqual(NANOTON, 1_000_000_000)
 
 
+class SessionCleanTests(unittest.TestCase):
+    def test_strips_quotes_and_whitespace(self) -> None:
+        from config import _clean_session_string
+
+        self.assertEqual(_clean_session_string(' "abc+def==" \n'), "abc+def==")
+        self.assertEqual(_clean_session_string("none"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

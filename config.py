@@ -24,6 +24,15 @@ def _split_csv(value: str | list[str] | None) -> list[str]:
     return [chunk.strip() for chunk in str(value).split(",") if chunk.strip()]
 
 
+def _clean_session_string(value: object) -> str:
+    text = "" if value is None else str(value)
+    text = text.strip().strip('"').strip("'")
+    text = "".join(text.split())
+    if text.lower() in {"none", "null", "your_session", "changeme"}:
+        return ""
+    return text
+
+
 class Settings(BaseSettings):
     """Pydantic-модель конфигурации всего пайплайна."""
 
@@ -151,6 +160,11 @@ class Settings(BaseSettings):
     floor_cache_ttl_sec: int = Field(default=900, ge=30, validation_alias=AliasChoices("FLOOR_CACHE_TTL_SEC"))
     rate_cache_ttl_sec: int = Field(default=300, ge=30, validation_alias=AliasChoices("RATE_CACHE_TTL_SEC"))
     profile_dedup_ttl_sec: int = Field(default=86400, ge=60, validation_alias=AliasChoices("PROFILE_DEDUP_TTL_SEC"))
+
+    @field_validator("telegram_session", mode="before")
+    @classmethod
+    def _clean_session(cls, value: object) -> str:
+        return _clean_session_string(value)
 
     @field_validator("seed_usernames", "seed_chats", mode="before")
     @classmethod

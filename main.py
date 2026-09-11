@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260911-1"
+BUILD = "20260911-2"
 
 
 def setup_logging() -> None:
@@ -237,16 +237,17 @@ class AnalyticsApp:
                 )
 
     async def run(self, *, live: bool) -> None:
-        await self.start()
-        poll_task = asyncio.create_task(
-            self.dispatcher.start_polling(self.bot, handle_signals=False),
-            name="aiogram-polling",
-        )
-        scan_task = asyncio.create_task(self._scan_loop(live), name="market-scan")
-        beat_task = asyncio.create_task(self._heartbeat(), name="heartbeat")
-        self._tasks = [poll_task, scan_task, beat_task]
-        stopper = asyncio.create_task(self._stop.wait(), name="stop-wait")
+        poll_task = scan_task = beat_task = stopper = None
         try:
+            await self.start()
+            poll_task = asyncio.create_task(
+                self.dispatcher.start_polling(self.bot, handle_signals=False),
+                name="aiogram-polling",
+            )
+            scan_task = asyncio.create_task(self._scan_loop(live), name="market-scan")
+            beat_task = asyncio.create_task(self._heartbeat(), name="heartbeat")
+            self._tasks = [poll_task, scan_task, beat_task]
+            stopper = asyncio.create_task(self._stop.wait(), name="stop-wait")
             if live:
                 await stopper
             else:
@@ -254,14 +255,17 @@ class AnalyticsApp:
                 self._stop.set()
         except asyncio.CancelledError:
             self._stop.set()
+            raise
         finally:
             LOGGER.info("Останавливаю задачи...")
             self._stop.set()
-            stopper.cancel()
-            scan_task.cancel()
-            poll_task.cancel()
-            beat_task.cancel()
-            await asyncio.gather(scan_task, poll_task, beat_task, stopper, return_exceptions=True)
+            for task in (scan_task, poll_task, beat_task, stopper):
+                if task is not None:
+                    task.cancel()
+            await asyncio.gather(
+                *(task for task in (scan_task, poll_task, beat_task, stopper) if task is not None),
+                return_exceptions=True,
+            )
             await self.close()
             LOGGER.info("Бот остановлен")
             if sys.platform == "win32":

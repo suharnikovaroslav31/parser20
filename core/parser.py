@@ -222,9 +222,13 @@ class ProfileScanner:
         self._flood = TelegramFloodControl(self._limiter)
         self._seen_ids: set[int] = set()
         self._queue: asyncio.Queue[tuple[User, str]] = asyncio.Queue()
-        session: StringSession | str
-        if settings.telegram_session.strip():
-            session = StringSession(settings.telegram_session.strip())
+        raw = self.settings.telegram_session.strip()
+        if raw:
+            try:
+                session = StringSession(raw)
+            except Exception as exc:
+                LOGGER.error("TELEGRAM_SESSION не читается: %s", exc)
+                session = StringSession()
         else:
             session = settings.session_name
         self.client = TelegramClient(
@@ -251,10 +255,26 @@ class ProfileScanner:
         LOGGER.info("TELEGRAM_SESSION=%s", StringSession.save(self.client.session))
 
     async def start(self) -> None:
+        session_len = len(self.settings.telegram_session.strip())
+        LOGGER.info(
+            "MTProto: %s",
+            f"TELEGRAM_SESSION ({session_len} символов)" if session_len else f"файл {self.settings.session_name}",
+        )
         await asyncio.wait_for(self.client.connect(), timeout=20)
         if not await self.client.is_user_authorized():
+            try:
+                await asyncio.wait_for(self.client.disconnect(), timeout=3)
+            except Exception:
+                pass
+            if session_len:
+                raise RuntimeError(
+                    "TELEGRAM_SESSION недействительна (слетела или обрезана при вставке). "
+                    "На ПК: python main.py --export-session — вставь строку ЦЕЛИКОМ в TELEGRAM_SESSION на хосте, без кавычек. "
+                    "Этот аккаунт не запускай на ПК, пока крутится хост."
+                )
             raise RuntimeError(
-                "Telethon-сессия не авторизована. Выполните: python main.py --login"
+                "TELEGRAM_SESSION пустая. На ПК: python main.py --login, затем python main.py --export-session, "
+                "строку вставь в TELEGRAM_SESSION на хосте."
             )
         me = await asyncio.wait_for(self.client.get_me(), timeout=15)
         LOGGER.info("MTProto клиент вошёл как %s id=%s", _user_display(me), me.id)
