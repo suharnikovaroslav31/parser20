@@ -97,8 +97,8 @@ class FilterTests(unittest.TestCase):
             stars_rating_min=1,
             stars_rating_max=1,
             require_stars_rating=True,
-            max_account_age_days=90,
-            filter_seller_age=True,
+            max_account_age_days=None,
+            filter_seller_age=False,
             min_activity_score=0,
         )
         self.flt = ProfileFilter(self.live)
@@ -126,10 +126,10 @@ class FilterTests(unittest.TestCase):
         decision = self.flt.evaluate(snap)
         self.assertFalse(decision.matched)
 
-    def test_skip_old_account(self) -> None:
+    def test_old_account_still_matches(self) -> None:
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(account_age_days=400), price=2.0)
         decision = self.flt.evaluate(snap)
-        self.assertFalse(decision.matched)
+        self.assertTrue(decision.matched, decision.reasons)
 
     def test_skip_profile_not_opened(self) -> None:
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(stars_fetched=False, stars_rating_level=1), price=2.0)
@@ -175,9 +175,10 @@ class FilterSchemaTests(unittest.TestCase):
             self.assertTrue(live.require_stars_rating)
             self.assertEqual(live.max_unique_gifts, 2)
             self.assertEqual(live.stars_rating_max, 1)
-            self.assertEqual(live.max_account_age_days, 90)
+            self.assertFalse(live.filter_seller_age)
+            self.assertIsNone(live.max_account_age_days)
             self.assertEqual(live.floor_max_ton, 10.0)
-            self.assertGreaterEqual(live.schema_version, 4)
+            self.assertGreaterEqual(live.schema_version, 5)
 
 
 class SlugTests(unittest.TestCase):

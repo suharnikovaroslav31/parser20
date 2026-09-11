@@ -15,9 +15,9 @@ from config import Settings
 
 LOGGER = logging.getLogger("tg_gifts.runtime")
 DEFAULT_PATH = Path("data/filters.json")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
-# Schema 2 временно расширял фильтры. Возвращаем исходный профиль «лох».
+# Профиль «лох»: рейтинг 1, мало NFT. Возраст аккаунта не фильтруем.
 ORIGINAL_FILTERS: dict[str, Any] = {
     "floor_min_ton": 0.0,
     "floor_max_ton": 10.0,
@@ -26,9 +26,9 @@ ORIGINAL_FILTERS: dict[str, Any] = {
     "stars_rating_min": 1,
     "stars_rating_max": 1,
     "require_stars_rating": True,
-    "max_account_age_days": 90,
+    "max_account_age_days": None,
     "min_activity_score": 0,
-    "filter_seller_age": True,
+    "filter_seller_age": False,
     "alert_cooldown_hours": 24,
     "market_poll_sec": 45,
 }
@@ -44,10 +44,10 @@ class LiveFilters:
     stars_rating_min: int = 1
     stars_rating_max: int = 1
     require_stars_rating: bool = True
-    max_account_age_days: Optional[int] = 90
+    max_account_age_days: Optional[int] = None
     require_premium: Optional[bool] = None
     min_activity_score: int = 0
-    filter_seller_age: bool = True
+    filter_seller_age: bool = False
     alert_cooldown_hours: int = 24
     market_poll_sec: int = 45
     community_url: str = "https://t.me/BYRMALDAEVO"
@@ -65,10 +65,10 @@ class LiveFilters:
             stars_rating_min=1,
             stars_rating_max=1,
             require_stars_rating=True,
-            max_account_age_days=90,
+            max_account_age_days=None,
             require_premium=settings.require_premium,
             min_activity_score=int(settings.min_activity_score),
-            filter_seller_age=True,
+            filter_seller_age=False,
             alert_cooldown_hours=int(settings.alert_cooldown_hours),
             market_poll_sec=int(settings.market_poll_sec),
             community_url=getattr(settings, "community_chat_url", None) or "https://t.me/BYRMALDAEVO",
@@ -112,7 +112,7 @@ class LiveFilters:
                 setattr(self, key, value)
             self.schema_version = SCHEMA_VERSION
             self.save()
-            LOGGER.info("Фильтры: лох = рейтинг 1, ≤2 NFT, ≤90д, профиль обязателен")
+            LOGGER.info("Фильтры: лох = рейтинг 1, ≤2 NFT, возраст не важен")
 
     def update(self, **kwargs: Any) -> None:
         for key, value in kwargs.items():
@@ -123,7 +123,7 @@ class LiveFilters:
 
     def summary_lines(self) -> list[str]:
         premium = {True: "только Premium", False: "без Premium", None: "любой"}[self.require_premium]
-        age = "выкл" if not self.max_account_age_days else f"≤ {self.max_account_age_days}д"
+        age = "выкл" if not self.filter_seller_age or not self.max_account_age_days else f"≤ {self.max_account_age_days}д"
         return [
             f"Сканер: {'ON' if self.scanner_enabled else 'OFF'}",
             f"Цена лота: {self.floor_min_ton:g}–{self.floor_max_ton:g} TON",

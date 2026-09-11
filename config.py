@@ -112,7 +112,7 @@ class Settings(BaseSettings):
         description="Максимум unique NFT в публичном профиле продавца.",
     )
     max_account_age_days: Optional[int] = Field(
-        default=90,
+        default=None,
         validation_alias=AliasChoices("MAX_ACCOUNT_AGE_DAYS"),
         description="None / 0 — не фильтровать по возрасту аккаунта.",
     )

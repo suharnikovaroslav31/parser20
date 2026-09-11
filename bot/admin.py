@@ -35,7 +35,7 @@ class EditFilter(StatesGroup):
 
 def _kb(live: LiveFilters) -> InlineKeyboardMarkup:
     on = "ON" if live.scanner_enabled else "OFF"
-    age = "выкл" if not live.max_account_age_days else str(live.max_account_age_days)
+    age = "выкл" if not live.filter_seller_age or not live.max_account_age_days else str(live.max_account_age_days)
     prem = {True: "да", False: "нет", None: "любой"}[live.require_premium]
     rating_req = "да" if live.require_stars_rating else "нет"
     rows = [
@@ -74,7 +74,7 @@ def _menu_text(live: LiveFilters) -> str:
         f"{e('spark')} Настройки видны только вам.\n\n"
         f"{lines}\n\n"
         f"{e('chat')} Чат: <a href=\"https://t.me/BYRMALDAEVO\">BYRMALDAEVO</a>\n"
-        f"{e('warn')} Лох = открыли профиль: Stars ур.1, ≤2 NFT, акк ≤90д. Без разбора профиля карточки нет.\n"
+        f"{e('warn')} Лох = открыли профиль: Stars ур.1, ≤2 NFT. Возраст аккаунта не фильтруем.\n"
         f"Нажмите кнопку, чтобы сменить значение."
     )
 
