@@ -164,6 +164,7 @@ class AccountMetrics:
     stars_rating_level: Optional[int] = None
     stars_rating_stars: Optional[int] = None
     stars_fetched: bool = False
+    gifts_fetched: bool = False
 
     @property
     def display_name(self) -> str:

@@ -31,6 +31,8 @@ def _metrics(**kwargs) -> AccountMetrics:
         activity_score=20,
         stars_rating_level=1,
         stars_rating_stars=10,
+        stars_fetched=True,
+        gifts_fetched=True,
     )
     base.update(kwargs)
     return AccountMetrics(**base)
@@ -129,6 +131,21 @@ class FilterTests(unittest.TestCase):
         decision = self.flt.evaluate(snap)
         self.assertFalse(decision.matched)
 
+    def test_skip_profile_not_opened(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(stars_fetched=False, stars_rating_level=1), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+
+    def test_skip_gifts_not_read(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(gifts_fetched=False), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+
+    def test_skip_verified(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(is_verified=True), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+
 
 class FilterSchemaTests(unittest.TestCase):
     def test_schema2_restores_original_filters(self) -> None:
@@ -160,7 +177,7 @@ class FilterSchemaTests(unittest.TestCase):
             self.assertEqual(live.stars_rating_max, 1)
             self.assertEqual(live.max_account_age_days, 90)
             self.assertEqual(live.floor_max_ton, 10.0)
-            self.assertGreaterEqual(live.schema_version, 3)
+            self.assertGreaterEqual(live.schema_version, 4)
 
 
 class SlugTests(unittest.TestCase):
@@ -179,13 +196,18 @@ class ProfileNftCountTests(unittest.TestCase):
     def test_keeps_profile_without_listed_extra(self) -> None:
         listed = _gift("C-3")
         profile = [_gift("A-1"), _gift("B-2")]
-        merged = profile_unique_gifts(profile, listed)
+        merged = profile_unique_gifts(profile, listed, gifts_fetched=True)
         self.assertEqual([gift.slug for gift in merged], ["A-1", "B-2"])
 
     def test_empty_profile_uses_listed(self) -> None:
         listed = _gift("A-1")
-        merged = profile_unique_gifts([], listed)
+        merged = profile_unique_gifts([], listed, gifts_fetched=True)
         self.assertEqual([gift.slug for gift in merged], ["A-1"])
+
+    def test_unread_profile_counts_nothing(self) -> None:
+        listed = _gift("A-1")
+        merged = profile_unique_gifts([], listed, gifts_fetched=False)
+        self.assertEqual(merged, [])
 
 
 class TrackerVersionTests(unittest.TestCase):

@@ -15,7 +15,7 @@ from config import Settings
 
 LOGGER = logging.getLogger("tg_gifts.runtime")
 DEFAULT_PATH = Path("data/filters.json")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Schema 2 временно расширял фильтры. Возвращаем исходный профиль «лох».
 ORIGINAL_FILTERS: dict[str, Any] = {
@@ -107,13 +107,12 @@ class LiveFilters:
                 continue
             setattr(self, key, value)
         saved = int(raw.get("schema_version") or 0)
-        if saved == 2:
+        if saved < SCHEMA_VERSION:
             for key, value in ORIGINAL_FILTERS.items():
                 setattr(self, key, value)
-            LOGGER.info("Фильтры возвращены: рейтинг 1, ≤2 NFT, ≤90д")
-        if saved < SCHEMA_VERSION:
             self.schema_version = SCHEMA_VERSION
             self.save()
+            LOGGER.info("Фильтры: лох = рейтинг 1, ≤2 NFT, ≤90д, профиль обязателен")
 
     def update(self, **kwargs: Any) -> None:
         for key, value in kwargs.items():

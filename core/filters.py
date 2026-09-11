@@ -140,6 +140,13 @@ class ProfileFilter:
         cheapest = self._cheapest(snapshot.unique_gifts)
         price = snapshot.min_floor_ton
 
+        if not metrics.stars_fetched:
+            reasons.append("профиль не открыт — рейтинг не прочитан")
+        if not metrics.gifts_fetched:
+            reasons.append("NFT профиля не прочитаны")
+        if metrics.is_verified:
+            reasons.append("verified — не новичок")
+
         if unique_count < live.min_unique_gifts:
             reasons.append(f"NFT в профиле {unique_count} < {live.min_unique_gifts}")
         if unique_count > live.max_unique_gifts:
@@ -179,7 +186,7 @@ class ProfileFilter:
         if matched:
             self.matched += 1
             reasons.append(
-                f"OK: рейтинг ур.{level}, {unique_count} NFT, лот {price:g} TON, акк ~{metrics.account_age_days}д"
+                f"лох: рейтинг ур.{level}, {unique_count} NFT, лот {price:g} TON, акк ~{metrics.account_age_days}д"
             )
             LOGGER.info("MATCH user=%s %s", metrics.user_id, reasons[-1])
         else:

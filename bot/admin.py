@@ -74,7 +74,7 @@ def _menu_text(live: LiveFilters) -> str:
         f"{e('spark')} Настройки видны только вам.\n\n"
         f"{lines}\n\n"
         f"{e('chat')} Чат: <a href=\"https://t.me/BYRMALDAEVO\">BYRMALDAEVO</a>\n"
-        f"{e('warn')} Рейтинг — уровень Stars из профиля Telegram (как «Уровень 1»).\n"
+        f"{e('warn')} Лох = открыли профиль: Stars ур.1, ≤2 NFT, акк ≤90д. Без разбора профиля карточки нет.\n"
         f"Нажмите кнопку, чтобы сменить значение."
     )
 

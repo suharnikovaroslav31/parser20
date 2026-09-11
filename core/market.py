@@ -117,8 +117,15 @@ def marketplace_http_price(item: dict[str, Any]) -> Optional[float]:
     )
 
 
-def profile_unique_gifts(profile_uniques: list[UniqueGift], listed: UniqueGift) -> list[UniqueGift]:
-    """Считать NFT профиля как есть. Пустой профиль — только выставленный лот."""
+def profile_unique_gifts(
+    profile_uniques: list[UniqueGift],
+    listed: UniqueGift,
+    *,
+    gifts_fetched: bool,
+) -> list[UniqueGift]:
+    """NFT только с открытого профиля. Не угадываем, если подарки не прочитались."""
+    if not gifts_fetched:
+        return []
     if profile_uniques:
         return profile_uniques
     return [listed]
@@ -403,7 +410,7 @@ class GiftMarketScanner:
                     LOGGER.info("лот %s %s: %s", title, slug or extra, exc)
                     continue
                 if snapshot is not None:
-                    if snapshot.metrics.stars_fetched:
+                    if snapshot.metrics.stars_fetched and snapshot.metrics.gifts_fetched:
                         self.tracker.mark(key)
                     yield snapshot
             if stop_price:
@@ -444,11 +451,14 @@ class GiftMarketScanner:
             metrics, profile_uniques, regular = cached
         else:
             user = self._seller_from_users(owner_id, users)
-            profile_uniques, regular = await self._load_profile_nfts(user, unique)
+            profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
             metrics = await self._metrics_for_seller(user, owner_id, unique.seller_name)
-            if owner_id and metrics.stars_fetched:
+            metrics.gifts_fetched = gifts_ok
+            if owner_id and metrics.stars_fetched and gifts_ok:
                 self._seller_cache[int(owner_id)] = (metrics, profile_uniques, regular)
-        profile_uniques = profile_unique_gifts(profile_uniques, unique)
+        profile_uniques = profile_unique_gifts(
+            profile_uniques, unique, gifts_fetched=metrics.gifts_fetched
+        )
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
             is_premium=metrics.is_premium,
@@ -573,7 +583,7 @@ class GiftMarketScanner:
                 )
             if snapshot is None:
                 continue
-            if snapshot.metrics.stars_fetched:
+            if snapshot.metrics.stars_fetched and snapshot.metrics.gifts_fetched:
                 self.tracker.mark(key)
             yield snapshot
 
@@ -609,9 +619,12 @@ class GiftMarketScanner:
             seller_id=user.id,
             seller_name=user.username,
         )
-        profile_uniques, regular = await self._load_profile_nfts(user, unique)
-        profile_uniques = profile_unique_gifts(profile_uniques, unique)
+        profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
+        profile_uniques = profile_unique_gifts(
+            profile_uniques, unique, gifts_fetched=gifts_ok
+        )
         metrics = await self._metrics_for_seller(user, user.id, user.username)
+        metrics.gifts_fetched = gifts_ok
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
             is_premium=metrics.is_premium,
@@ -771,9 +784,11 @@ class GiftMarketScanner:
         )
         user = None
         metrics = await self._metrics_for_seller(user, owner_id_int, unique.seller_name)
-        inventory = await self._load_profile_nfts(user, unique)
-        profile_uniques, regular = inventory
-        profile_uniques = profile_unique_gifts(profile_uniques, unique)
+        profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
+        metrics.gifts_fetched = gifts_ok
+        profile_uniques = profile_unique_gifts(
+            profile_uniques, unique, gifts_fetched=gifts_ok
+        )
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
             is_premium=metrics.is_premium,
@@ -854,9 +869,11 @@ class GiftMarketScanner:
         )
         user = None
         metrics = await self._metrics_for_seller(user, owner_id_int, unique.seller_name)
-        inventory = await self._load_profile_nfts(user, unique)
-        profile_uniques, regular = inventory
-        profile_uniques = profile_unique_gifts(profile_uniques, unique)
+        profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
+        metrics.gifts_fetched = gifts_ok
+        profile_uniques = profile_unique_gifts(
+            profile_uniques, unique, gifts_fetched=gifts_ok
+        )
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
             is_premium=metrics.is_premium,
@@ -888,16 +905,16 @@ class GiftMarketScanner:
         self,
         user: Optional[User],
         listed: UniqueGift,
-    ) -> tuple[list[UniqueGift], list]:
-        """Публичные unique NFT продавца. Пустой список — фильтр сам отвергнет."""
+    ) -> tuple[list[UniqueGift], list, bool]:
+        """Публичные unique NFT. False = профиль не удалось открыть."""
         if user is None or user.bot or getattr(user, "deleted", False):
-            return [], []
+            return [], [], False
         try:
             uniques, regular = await self.scanner.fetch_saved_gifts(user, stop_after_unique=3)
         except Exception as exc:
             LOGGER.info("gifts профиля %s: %s", getattr(user, "id", "?"), exc)
-            return [], []
-        return uniques, regular
+            return [], [], False
+        return uniques, regular, True
 
     async def _metrics_for_seller(
         self,
@@ -949,5 +966,6 @@ class GiftMarketScanner:
             account_age_days=age_days,
             public_channel_count=0,
             activity_score=score,
-            stars_fetched=user is None,
+            stars_fetched=False,
+            gifts_fetched=False,
         )

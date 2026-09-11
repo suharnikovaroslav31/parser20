@@ -534,7 +534,9 @@ class ProfileScanner:
                     label=f"gifts:{user.id}",
                 )
             except (RPCError, asyncio.TimeoutError) as exc:
-                LOGGER.debug("getSavedStarGifts user=%s: %s", user.id, exc)
+                LOGGER.info("getSavedStarGifts user=%s: %s", user.id, exc)
+                if pages == 1:
+                    raise
                 break
 
             gifts = getattr(result, "gifts", None) or []
@@ -628,6 +630,7 @@ class ProfileScanner:
         try:
             metrics = await self.fetch_metrics(user)
             unique, regular = await self.fetch_saved_gifts(user)
+            metrics.gifts_fetched = True
             for gift in unique:
                 await self._enrich_telegram_floor(gift)
             total_ton, min_floor, cheap = await self.market.estimate_portfolio(unique)
