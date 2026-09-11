@@ -31,9 +31,9 @@ from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
-CHEAP_PAGES = 8
-NEW_PAGES = 2
-EXTERNAL_LIMIT = 80
+CHEAP_PAGES = 4
+NEW_PAGES = 1
+EXTERNAL_LIMIT = 25
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 
@@ -209,6 +209,9 @@ class GiftMarketScanner:
             self.live.max_account_age_days if self.live.filter_seller_age else "выкл",
         )
         try:
+            if not await self.scanner._flood.ensure_connected():
+                LOGGER.error("Telegram нет связи — этот проход пропускаю")
+                return
             self.stage = "telegram-catalog"
             LOGGER.info("Telegram: каталог коллекций")
             async for snapshot in self._iter_telegram_resale():
@@ -298,6 +301,9 @@ class GiftMarketScanner:
         total = len(resale_types)
         for index, base in enumerate(resale_types, start=1):
             if self._stopping():
+                return
+            if self.scanner._flood.cooling:
+                LOGGER.info("Telegram flood — останавливаю обход коллекций до следующего круга")
                 return
             gift_id = int(getattr(base, "id", 0) or 0)
             title = str(getattr(base, "title", "") or gift_id)
@@ -517,6 +523,9 @@ class GiftMarketScanner:
         ton_usd: float,
     ) -> AsyncIterator[ProfileSnapshot]:
         """Лоты внешних маркетов → slug/username → публичный профиль Telegram."""
+        if self.scanner._flood.cooling:
+            LOGGER.info("%s: Telegram flood — внешние лоты в этом круге пропускаю", source)
+            return
         for item in items[:EXTERNAL_LIMIT]:
             if self._stopping():
                 return
@@ -528,7 +537,7 @@ class GiftMarketScanner:
                 continue
             http_price = marketplace_http_price(item)
             snapshot = None
-            if slug:
+            if slug and not self.scanner._flood.cooling:
                 try:
                     fetched = await self._unique_star_gift(slug)
                 except RPCError as exc:

@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260910-7"
+BUILD = "20260911-1"
 
 
 def setup_logging() -> None:
@@ -182,6 +182,13 @@ class AnalyticsApp:
                 except asyncio.TimeoutError:
                     continue
                 continue
+            if not await self.scanner._flood.ensure_connected():
+                LOGGER.error("Нет сессии Telegram — пауза 45с")
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=45)
+                except asyncio.TimeoutError:
+                    continue
+                continue
             LOGGER.info("Старт прохода Telegram Gift Market + MRKT")
             self.filters.reset_stats()
             try:
@@ -191,7 +198,15 @@ class AnalyticsApp:
                     await self.handle_snapshot(snapshot)
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                name = type(exc).__name__
+                if any(token in name.upper() for token in ("AUTHKEY", "UNAUTHORIZED", "SESSIONREVOKED")):
+                    LOGGER.error("Сессия Telegram умерла (%s). Нужен новый TELEGRAM_SESSION", exc)
+                    try:
+                        await asyncio.wait_for(self._stop.wait(), timeout=60)
+                    except asyncio.TimeoutError:
+                        continue
+                    continue
                 LOGGER.exception("Ошибка прохода по маркету")
             LOGGER.info("Фильтры за проход: %s", self.filters.dump_stats())
             LOGGER.info("Проход: seen=%s matched=%s", self._seen, self._matched)
@@ -202,6 +217,25 @@ class AnalyticsApp:
             except asyncio.TimeoutError:
                 continue
 
+    async def _heartbeat(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=45)
+                return
+            except asyncio.TimeoutError:
+                connected = False
+                try:
+                    connected = bool(self.scanner.client.is_connected())
+                except Exception:
+                    pass
+                LOGGER.info(
+                    "жив | stage=%s seen=%s matched=%s tg=%s",
+                    self.markets.stage,
+                    self._seen,
+                    self._matched,
+                    "ok" if connected else "нет",
+                )
+
     async def run(self, *, live: bool) -> None:
         await self.start()
         poll_task = asyncio.create_task(
@@ -209,7 +243,8 @@ class AnalyticsApp:
             name="aiogram-polling",
         )
         scan_task = asyncio.create_task(self._scan_loop(live), name="market-scan")
-        self._tasks = [poll_task, scan_task]
+        beat_task = asyncio.create_task(self._heartbeat(), name="heartbeat")
+        self._tasks = [poll_task, scan_task, beat_task]
         stopper = asyncio.create_task(self._stop.wait(), name="stop-wait")
         try:
             if live:
@@ -225,7 +260,8 @@ class AnalyticsApp:
             stopper.cancel()
             scan_task.cancel()
             poll_task.cancel()
-            await asyncio.gather(scan_task, poll_task, stopper, return_exceptions=True)
+            beat_task.cancel()
+            await asyncio.gather(scan_task, poll_task, beat_task, stopper, return_exceptions=True)
             await self.close()
             LOGGER.info("Бот остановлен")
             if sys.platform == "win32":

@@ -75,15 +75,26 @@ def _user_display(user: User) -> str:
 class TelegramFloodControl:
     """FloodWait и зависшие RPC: не спим минутами, при timeout переподключаемся."""
 
+    RPC_TIMEOUT = 18.0
+
     def __init__(self, limiter: AsyncRateLimiter) -> None:
         self.limiter = limiter
         self.client: Optional[TelegramClient] = None
         self.stop_event: Optional[asyncio.Event] = None
         self._reconnect_lock = asyncio.Lock()
         self._last_reconnect = 0.0
+        self.cool_until = 0.0
+
+    @property
+    def cooling(self) -> bool:
+        return time.monotonic() < self.cool_until
 
     def _stopping(self) -> bool:
         return self.stop_event is not None and self.stop_event.is_set()
+
+    def _note_flood(self, wait: int) -> None:
+        pause = min(max(wait, 15), 90)
+        self.cool_until = max(self.cool_until, time.monotonic() + pause)
 
     async def _sleep(self, seconds: float) -> None:
         if seconds <= 0:
@@ -97,15 +108,27 @@ class TelegramFloodControl:
             return
         raise asyncio.CancelledError
 
+    async def ensure_connected(self) -> bool:
+        client = self.client
+        if client is None:
+            return False
+        try:
+            if not client.is_connected():
+                LOGGER.warning("Telegram оффлайн — подключаюсь")
+                await asyncio.wait_for(client.connect(), timeout=12)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                LOGGER.error("Сессия Telegram слетела — нужен новый TELEGRAM_SESSION")
+                return False
+            return True
+        except Exception as exc:
+            LOGGER.warning("Telegram connect: %s", exc)
+            return False
+
     async def _recover(self, label: str) -> None:
         client = self.client
         if client is None:
             return
-        if time.monotonic() - self._last_reconnect < 20:
-            return
         async with self._reconnect_lock:
-            if time.monotonic() - self._last_reconnect < 20:
-                return
             self._last_reconnect = time.monotonic()
             LOGGER.warning("Telegram reconnect после зависания %s", label)
             try:
@@ -117,17 +140,47 @@ class TelegramFloodControl:
             except Exception as exc:
                 LOGGER.warning("reconnect не удался: %s", exc)
 
+    async def _await_rpc(self, factory, label: str) -> Any:
+        task = asyncio.create_task(self.limiter.run(factory), name=f"tg:{label}")
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=self.RPC_TIMEOUT)
+        except asyncio.TimeoutError:
+            LOGGER.warning("Telegram timeout %s — reconnect", label)
+            await self._recover(label)
+            try:
+                await asyncio.wait_for(task, timeout=8)
+            except Exception:
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except Exception:
+                        pass
+            raise
+        except asyncio.CancelledError:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except Exception:
+                    pass
+            raise
+
     async def call(self, factory, *, retries: int = 4, label: str = "rpc") -> Any:
         last_error: BaseException | None = None
         for attempt in range(retries):
             if self._stopping():
                 raise asyncio.CancelledError
             try:
-                return await self.limiter.run(factory)
+                return await self._await_rpc(factory, label)
             except asyncio.CancelledError:
                 raise
+            except asyncio.TimeoutError as exc:
+                last_error = exc
+                continue
             except FloodWaitError as exc:
                 wait = int(getattr(exc, "seconds", 1) or 1)
+                self._note_flood(wait)
                 if wait <= 25 and attempt + 1 < retries:
                     LOGGER.warning("Telegram FloodWait %s: пауза %ss", label, wait)
                     await self._sleep(wait)
@@ -136,6 +189,10 @@ class TelegramFloodControl:
                 LOGGER.warning("Telegram FloodWait %s %ss — пропускаю", label, wait)
                 raise
             except RPCError as exc:
+                name = type(exc).__name__.upper()
+                if any(token in name for token in ("AUTHKEY", "UNAUTHORIZED", "SESSIONREVOKED", "SESSIONEXPIRED")):
+                    LOGGER.error("Сессия Telegram: %s", exc)
+                    raise
                 message = str(exc).upper()
                 if any(token in message for token in ("PRIVACY", "GIFT", "SAVED_STAR", "USER_NOT_MUTUAL")):
                     LOGGER.debug("Telegram RPC skip %s: %s", label, exc)
