@@ -410,8 +410,7 @@ class GiftMarketScanner:
                     LOGGER.info("лот %s %s: %s", title, slug or extra, exc)
                     continue
                 if snapshot is not None:
-                    if snapshot.metrics.stars_fetched and snapshot.metrics.gifts_fetched:
-                        self.tracker.mark(key)
+                    snapshot.listing_key = key
                     yield snapshot
             if stop_price:
                 return
@@ -583,8 +582,7 @@ class GiftMarketScanner:
                 )
             if snapshot is None:
                 continue
-            if snapshot.metrics.stars_fetched and snapshot.metrics.gifts_fetched:
-                self.tracker.mark(key)
+            snapshot.listing_key = key
             yield snapshot
 
     async def _snapshot_from_http_user(

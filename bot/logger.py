@@ -15,7 +15,7 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
 
 from bot.claims import ClaimLot, ClaimStore, lot_keyboard, new_token
-from bot.emoji import e
+from bot.emoji import disable, e, strip
 from core.models import FilterDecision, UniqueGift
 from core.runtime import LiveFilters
 
@@ -158,26 +158,50 @@ class GiftLogger:
     async def send(self, decision: FilterDecision) -> bool:
         token = self._remember(decision)
         nft = decision.snapshot.cheap_gifts[0].nft_link if decision.snapshot.cheap_gifts else ""
-        markup = lot_keyboard(token, nft)
         html_text = self.render(decision)
-        try:
-            await self._deliver(html_text, markup, html=True)
-            return True
-        except TelegramRetryAfter as exc:
-            await asyncio.sleep(int(exc.retry_after) + 1)
-            await self._deliver(html_text, markup, html=True)
-            return True
-        except TelegramBadRequest as exc:
-            LOGGER.warning("HTML лог отклонён (%s), шлём plain", exc)
+        plain = _plain(decision, self.live)
+        last_error = None
+        for attempt in range(8):
+            markup = lot_keyboard(token, nft)
             try:
-                await self._deliver(_plain(decision, self.live), markup, html=False)
+                await self._deliver(html_text, markup, html=True)
                 return True
-            except TelegramAPIError as exc2:
-                LOGGER.error("Не удалось отправить лог: %s", exc2)
+            except TelegramRetryAfter as exc:
+                wait = min(int(exc.retry_after) + 1, 60)
+                LOGGER.warning("группа flood, жду %sс (попытка %s)", wait, attempt + 1)
+                await asyncio.sleep(wait)
+                last_error = exc
+                continue
+            except TelegramBadRequest as exc:
+                last_error = exc
+                LOGGER.warning("карточка отклонена (%s), упрощает", exc)
+                disable()
+                html_text = strip(html_text)
+                text_l = str(exc).lower()
+                use_html = "too long" not in text_l and "message is too long" not in text_l
+                try:
+                    await self._deliver(html_text if use_html else plain, lot_keyboard(token, nft), html=use_html)
+                    return True
+                except TelegramRetryAfter as exc2:
+                    wait = min(int(exc2.retry_after) + 1, 60)
+                    LOGGER.warning("группа flood после fallback, жду %sс", wait)
+                    await asyncio.sleep(wait)
+                    continue
+                except TelegramAPIError:
+                    try:
+                        await self._deliver(plain, lot_keyboard(token, nft), html=False)
+                        return True
+                    except TelegramRetryAfter as exc3:
+                        await asyncio.sleep(min(int(exc3.retry_after) + 1, 60))
+                        continue
+                    except TelegramAPIError as exc3:
+                        LOGGER.error("Не удалось отправить лог: %s", exc3)
+                        return False
+            except TelegramAPIError as exc:
+                LOGGER.error("Не удалось отправить лог: %s", exc)
                 return False
-        except TelegramAPIError as exc:
-            LOGGER.error("Не удалось отправить лог: %s", exc)
-            return False
+        LOGGER.error("карточка не ушла после ретраев: %s", last_error)
+        return False
 
     async def _deliver(self, text: str, markup, *, html: bool) -> None:
         await self.bot.send_message(

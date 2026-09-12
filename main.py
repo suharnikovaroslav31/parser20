@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260912-5"
+BUILD = "20260912-6"
 
 
 def setup_logging() -> None:
@@ -147,31 +147,49 @@ class AnalyticsApp:
         if self._stop.is_set():
             return
         self._seen += 1
-        decision = self.filters.evaluate(snapshot)
         try:
-            await self.storage.save_snapshot(snapshot, decision.matched)
-        except Exception:
-            LOGGER.exception("Не удалось сохранить снимок user=%s", snapshot.metrics.user_id)
-        if not decision.matched:
-            return
-        cooldown = self.live.alert_cooldown_sec
-        if await self.storage.already_alerted(snapshot.metrics.user_id, snapshot.fingerprint, cooldown):
-            LOGGER.info("Дедуп user=%s", snapshot.metrics.user_id)
-            return
-        sent = await self.logger_bot.send(decision)
-        if sent:
-            await self.storage.mark_alerted(snapshot.metrics.user_id, snapshot.fingerprint, cooldown)
-            self._matched += 1
-            LOGGER.info(
-                "ALERT #%s user=%s rating=%s gifts=%s floor=%s",
-                self._matched,
+            decision = self.filters.evaluate(snapshot)
+            try:
+                await self.storage.save_snapshot(snapshot, decision.matched)
+            except Exception:
+                LOGGER.exception("Не удалось сохранить снимок user=%s", snapshot.metrics.user_id)
+            opened = snapshot.metrics.stars_fetched and snapshot.metrics.gifts_fetched
+            key = snapshot.listing_key
+            if not decision.matched:
+                if opened:
+                    self.markets.tracker.mark(key)
+                return
+            cooldown = self.live.alert_cooldown_sec
+            if await self.storage.already_alerted(snapshot.metrics.user_id, snapshot.fingerprint, cooldown):
+                LOGGER.info("Дедуп user=%s", snapshot.metrics.user_id)
+                if opened:
+                    self.markets.tracker.mark(key)
+                return
+            sent = await self.logger_bot.send(decision)
+            if sent:
+                await self.storage.mark_alerted(snapshot.metrics.user_id, snapshot.fingerprint, cooldown)
+                if opened:
+                    self.markets.tracker.mark(key)
+                self._matched += 1
+                LOGGER.info(
+                    "ALERT #%s user=%s rating=%s gifts=%s floor=%s",
+                    self._matched,
+                    snapshot.metrics.user_id,
+                    snapshot.metrics.stars_rating_level,
+                    len(snapshot.unique_gifts),
+                    snapshot.min_floor_ton,
+                )
+                await asyncio.sleep(1.2)
+                return
+            LOGGER.error(
+                "MATCH user=%s, карточка в группу не ушла — лот повторю в следующем круге",
                 snapshot.metrics.user_id,
-                snapshot.metrics.stars_rating_level,
-                len(snapshot.unique_gifts),
-                snapshot.min_floor_ton,
             )
-        else:
-            LOGGER.error("MATCH user=%s, карточка в группу не ушла", snapshot.metrics.user_id)
+        except Exception:
+            LOGGER.exception(
+                "сбой карточки user=%s — круг сканера не рву",
+                snapshot.metrics.user_id,
+            )
 
     async def _scan_loop(self, live: bool) -> None:
         while not self._stop.is_set():

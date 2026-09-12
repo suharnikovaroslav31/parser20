@@ -281,7 +281,7 @@ class ProfileNftCountTests(unittest.TestCase):
 
 class TrackerVersionTests(unittest.TestCase):
     def test_tracker_version_bumped(self) -> None:
-        self.assertGreaterEqual(TRACKER_VERSION, 5)
+        self.assertGreaterEqual(TRACKER_VERSION, 6)
         self.assertTrue(callable(ListingTracker))
 
 

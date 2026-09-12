@@ -90,8 +90,11 @@ _FAIL_MARKS = (
     "custom emoji",
     "custom_emoji",
     "emoji_invalid",
+    "icon_custom",
+    "inline keyboard",
     "can't parse entities",
     "cant parse entities",
+    "can't find end tag",
 )
 _enabled = True
 

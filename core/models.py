@@ -195,6 +195,7 @@ class ProfileSnapshot:
     processed_ms: float
     source: str
     fingerprint_key: str = ""
+    listing_key: str = ""
     captured_at: datetime = field(default_factory=utcnow)
 
     @property

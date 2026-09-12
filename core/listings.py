@@ -8,7 +8,7 @@ from pathlib import Path
 
 LOGGER = logging.getLogger("tg_gifts.listings")
 DEFAULT_PATH = Path("data/seen_listings.json")
-VERSION = 5
+VERSION = 6
 
 
 class ListingTracker:
