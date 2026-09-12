@@ -69,10 +69,8 @@ def lot_keyboard(token: str, nft_link: str) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text="Занять лот", callback_data=f"claim:{token}", **kb_icon("check"))]]
     url = _http_url(nft_link)
     if url:
-        rows.append([InlineKeyboardButton(text="Открыть NFT", url=url, **kb_icon("link"))])
-    rows.append(
-        [InlineKeyboardButton(text="Чат BYRMALDAEVO", url="https://t.me/BYRMALDAEVO", **kb_icon("chat"))]
-    )
+        rows.append([InlineKeyboardButton(text="Открыть NFT", url=url)])
+    rows.append([InlineKeyboardButton(text="Чат BYRMALDAEVO", url="https://t.me/BYRMALDAEVO")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

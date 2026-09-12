@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -529,8 +528,6 @@ class ProfileScanner:
         pages = 0
         max_pages = 4 if stop_after_unique is not None else 40
         input_peer = await self._input_peer(user)
-        supported = inspect.signature(GetSavedStarGiftsRequest).parameters
-        include_hidden = "exclude_unsaved" in supported
         while pages < max_pages:
             pages += 1
             kwargs: dict[str, Any] = {
@@ -538,11 +535,9 @@ class ProfileScanner:
                 "offset": offset,
                 "limit": self.settings.gift_page_size,
             }
-            if include_hidden:
-                kwargs["exclude_unsaved"] = False
             try:
                 result = await self._flood.call(
-                    lambda payload=kwargs: self.client(GetSavedStarGiftsRequest(**payload)),
+                    lambda payload=dict(kwargs): self.client(GetSavedStarGiftsRequest(**payload)),
                     label=f"gifts:{user.id}",
                 )
             except (RPCError, asyncio.TimeoutError) as exc:

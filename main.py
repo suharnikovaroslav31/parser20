@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260912-6"
+BUILD = "20260912-7"
 
 
 def setup_logging() -> None:
@@ -99,6 +99,16 @@ class AnalyticsApp:
         except Exception as exc:
             LOGGER.warning("http start: %s", exc)
         await asyncio.wait_for(self.scanner.start(), timeout=25)
+        try:
+            me = await asyncio.wait_for(self.bot.get_me(), timeout=8)
+            LOGGER.info("Бот @%s, группа %s", me.username, self.settings.log_group_id)
+            await asyncio.wait_for(
+                self.bot.send_chat_action(self.settings.log_group_id, "typing"),
+                timeout=8,
+            )
+            LOGGER.info("В лог-группу писать можно")
+        except Exception as exc:
+            LOGGER.error("Бот не пишет в лог-группу %s: %s", self.settings.log_group_id, exc)
         LOGGER.info(
             "Маркет + бот | рейтинг %s–%s | NFT %s–%s | лот %s–%s TON",
             self.live.stars_rating_min,
@@ -150,7 +160,7 @@ class AnalyticsApp:
         try:
             decision = self.filters.evaluate(snapshot)
             try:
-                await self.storage.save_snapshot(snapshot, decision.matched)
+                await asyncio.wait_for(self.storage.save_snapshot(snapshot, decision.matched), timeout=4)
             except Exception:
                 LOGGER.exception("Не удалось сохранить снимок user=%s", snapshot.metrics.user_id)
             opened = snapshot.metrics.stars_fetched and snapshot.metrics.gifts_fetched
@@ -179,7 +189,7 @@ class AnalyticsApp:
                     len(snapshot.unique_gifts),
                     snapshot.min_floor_ton,
                 )
-                await asyncio.sleep(1.2)
+                await asyncio.sleep(0.6)
                 return
             LOGGER.error(
                 "MATCH user=%s, карточка в группу не ушла — лот повторю в следующем круге",
@@ -247,11 +257,12 @@ class AnalyticsApp:
                 except Exception:
                     pass
                 LOGGER.info(
-                    "жив | stage=%s seen=%s matched=%s tg=%s",
+                    "жив | stage=%s seen=%s matched=%s tg=%s | %s",
                     self.markets.stage,
                     self._seen,
                     self._matched,
                     "ok" if connected else "нет",
+                    self.filters.dump_stats(),
                 )
 
     async def run(self, *, live: bool) -> None:

@@ -161,39 +161,38 @@ class GiftLogger:
         html_text = self.render(decision)
         plain = _plain(decision, self.live)
         last_error = None
-        for attempt in range(8):
+        for attempt in range(4):
             markup = lot_keyboard(token, nft)
             try:
                 await self._deliver(html_text, markup, html=True)
                 return True
             except TelegramRetryAfter as exc:
-                wait = min(int(exc.retry_after) + 1, 60)
+                wait = min(int(getattr(exc, "retry_after", 5) or 5), 15)
                 LOGGER.warning("группа flood, жду %sс (попытка %s)", wait, attempt + 1)
                 await asyncio.sleep(wait)
                 last_error = exc
                 continue
             except TelegramBadRequest as exc:
                 last_error = exc
-                LOGGER.warning("карточка отклонена (%s), упрощает", exc)
+                LOGGER.warning("карточка отклонена (%s)", exc)
                 disable()
                 html_text = strip(html_text)
-                text_l = str(exc).lower()
-                use_html = "too long" not in text_l and "message is too long" not in text_l
+                err = str(exc).lower()
                 try:
-                    await self._deliver(html_text if use_html else plain, lot_keyboard(token, nft), html=use_html)
+                    if "keyboard" in err or "button" in err:
+                        await self._deliver(html_text, None, html=True)
+                    elif "too long" in err:
+                        await self._deliver(plain, markup, html=False)
+                    else:
+                        await self._deliver(html_text, lot_keyboard(token, nft), html=True)
                     return True
                 except TelegramRetryAfter as exc2:
-                    wait = min(int(exc2.retry_after) + 1, 60)
-                    LOGGER.warning("группа flood после fallback, жду %sс", wait)
-                    await asyncio.sleep(wait)
+                    await asyncio.sleep(min(int(getattr(exc2, "retry_after", 5) or 5), 15))
                     continue
                 except TelegramAPIError:
                     try:
-                        await self._deliver(plain, lot_keyboard(token, nft), html=False)
+                        await self._deliver(plain, None, html=False)
                         return True
-                    except TelegramRetryAfter as exc3:
-                        await asyncio.sleep(min(int(exc3.retry_after) + 1, 60))
-                        continue
                     except TelegramAPIError as exc3:
                         LOGGER.error("Не удалось отправить лог: %s", exc3)
                         return False
@@ -204,10 +203,12 @@ class GiftLogger:
         return False
 
     async def _deliver(self, text: str, markup, *, html: bool) -> None:
-        await self.bot.send_message(
-            chat_id=self.log_group_id,
-            text=text,
-            reply_markup=markup,
-            disable_web_page_preview=True,
-            parse_mode=ParseMode.HTML if html else None,
-        )
+        kwargs: dict = {
+            "chat_id": self.log_group_id,
+            "text": text,
+            "disable_web_page_preview": True,
+            "parse_mode": ParseMode.HTML if html else "",
+        }
+        if markup is not None:
+            kwargs["reply_markup"] = markup
+        await self.bot.send_message(**kwargs)
