@@ -69,9 +69,12 @@ def _gift_line(gift: UniqueGift) -> str:
     if link.startswith("https://"):
         return (
             f"{e('gift')} {_http_link(link, title)}{_esc(model)} — "
-            f"<code>{floor} TON</code> ({_esc(source)})"
+            f"{e('ton')} <code>{floor} TON</code> ({_esc(source)})"
         )
-    return f"{e('gift')} {_esc(title)}{_esc(model)} — <code>{floor} TON</code> ({_esc(source)})"
+    return (
+        f"{e('gift')} {_esc(title)}{_esc(model)} — "
+        f"{e('ton')} <code>{floor} TON</code> ({_esc(source)})"
+    )
 
 
 def _plain(decision: FilterDecision, live: LiveFilters) -> str:
@@ -114,17 +117,18 @@ class GiftLogger:
         )
         return (
             f"{e('cart')} <b>Маркет</b> <code>{_esc(_SOURCE_NAME.get(snapshot.source, snapshot.source))}</code> · "
-            f"<code>{_ton(snapshot.min_floor_ton)} TON</code>\n"
+            f"{e('ton')} <code>{_ton(snapshot.min_floor_ton)} TON</code>\n"
             f"{e('user')} <b>Продавец</b> {profile_html} "
-            f"({_esc(handle)}) · ID <code>{metrics.user_id}</code>\n"
-            f"{e('crown')} <b>Stars-рейтинг:</b> <code>{_esc(rating)}</code>\n"
-            f"{e('star')} <b>Premium:</b> <code>{'да' if metrics.is_premium else 'нет'}</code>\n"
+            f"({_esc(handle)})\n"
+            f"{e('id')} ID <code>{metrics.user_id}</code>\n"
+            f"{e('star')} <b>Stars-рейтинг:</b> <code>{_esc(rating)}</code>\n"
+            f"{e('spark')} <b>Premium:</b> <code>{'да' if metrics.is_premium else 'нет'}</code>\n"
             f"{e('gift')} <b>NFT в профиле:</b> "
             f"<code>{len(snapshot.unique_gifts)}</code> / макс <code>{self.live.max_unique_gifts}</code>\n"
-            f"{e('chart')} Регистрация {_esc(_age_label(metrics.approx_registered_at, metrics.account_age_days))}\n"
-            f"{e('gem')} <b>Лот</b>\n{cheap_block}{extra}\n"
-            f"{e('link')} {_http_link(getgems, 'Getgems')} · {_http_link(community, 'чат BYRMALDAEVO')}\n"
-            f"{e('clock')} <code>{now}</code>\n"
+            f"{e('chart')} <b>Регистрация</b> {_esc(_age_label(metrics.approx_registered_at, metrics.account_age_days))}\n"
+            f"{e('money')} <b>Лот</b>\n{cheap_block}{extra}\n"
+            f"{e('link')} {_http_link(getgems, 'Getgems')} · {e('chat')} {_http_link(community, 'чат BYRMALDAEVO')}\n"
+            f"{e('bell')} <code>{now}</code>\n"
             f"<i>{_esc('; '.join(decision.reasons))}</i>"
         )
 

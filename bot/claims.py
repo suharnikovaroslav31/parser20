@@ -97,9 +97,9 @@ def format_lot_dm(lot: ClaimLot) -> str:
         f"{e('check')} <b>Лот занят</b>\n"
         f"{e('gift')} <b>{_esc(lot.title)}{num}</b>\n"
         f"{e('ton')} Цена: <code>{price} TON</code> · {_esc(lot.source)}\n"
-        f"{e('crown')} Рейтинг продавца: <code>{_esc(rating)}</code>\n"
-        f"{e('user')} Продавец: {_esc(lot.seller_name)} ({_esc(handle)}) "
-        f"ID <code>{lot.seller_id}</code>\n"
+        f"{e('star')} Рейтинг продавца: <code>{_esc(rating)}</code>\n"
+        f"{e('user')} Продавец: {_esc(lot.seller_name)} ({_esc(handle)})\n"
+        f"{e('id')} ID <code>{lot.seller_id}</code>\n"
         f"{e('link')} NFT: {nft}\n"
         f"{e('chat')} Чат: https://t.me/BYRMALDAEVO"
     )

@@ -56,16 +56,16 @@ def _kb(live: LiveFilters) -> InlineKeyboardMarkup:
             _btn(f"Рейтинг мин {live.stars_rating_min}", "set:stars_rating_min", "star"),
             _btn(f"Рейтинг макс {live.stars_rating_max}", "set:stars_rating_max", "star"),
         ],
-        [_btn(f"Рейтинг обязателен: {rating_req}", "tgl:rating", "crown")],
+        [_btn(f"Рейтинг обязателен: {rating_req}", "tgl:rating", "star")],
         [
-            _btn(f"Возраст дн. {age}", "set:max_account_age_days", "clock"),
+            _btn(f"Возраст дн. {age}", "set:max_account_age_days", "chart"),
             _btn(f"Premium {prem}", "cycle:premium", "spark"),
         ],
         [
             _btn(f"Активность ≥ {live.min_activity_score}", "set:min_activity_score", "chart"),
-            _btn(f"Круг {live.market_poll_sec}с", "set:market_poll_sec", "fire"),
+            _btn(f"Круг {live.market_poll_sec}с", "set:market_poll_sec", "lightning"),
         ],
-        [_btn(f"Антидубль {live.alert_cooldown_hours}ч", "set:alert_cooldown_hours", "warn")],
+        [_btn(f"Антидубль {live.alert_cooldown_hours}ч", "set:alert_cooldown_hours", "bell")],
         [_btn("Обновить", "menu:refresh", "lightning")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -129,7 +129,7 @@ def setup_admin(live: LiveFilters) -> Router:
     @router.message(CommandStart())
     async def start_public(message: Message) -> None:
         await message.answer(
-            f"{e('gem')} Бот запущен.\n"
+            f"{e('check')} Бот запущен.\n"
             f"Теперь в группе можно нажать «Занять лот» — карточка придёт сюда в личку.\n"
             f"{e('chat')} Чат: <a href=\"https://t.me/BYRMALDAEVO\">t.me/BYRMALDAEVO</a>",
             disable_web_page_preview=True,
