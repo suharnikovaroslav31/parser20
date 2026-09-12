@@ -167,10 +167,11 @@ class FilterTests(unittest.TestCase):
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
-    def test_stargifts_count_alone_still_matches(self) -> None:
+    def test_skip_hidden_collection(self) -> None:
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=20), price=2.0)
         decision = self.flt.evaluate(snap)
-        self.assertTrue(decision.matched, decision.reasons)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("скрыт" in reason for reason in decision.reasons))
 
     def test_few_extra_gifts_still_match(self) -> None:
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=4), price=2.0)

@@ -259,6 +259,10 @@ class ProfileFilter:
         regular = len(snapshot.regular_gifts)
         if live.max_regular_gifts > 0 and regular > live.max_regular_gifts:
             found.append(f"обычных гифтов {regular} > {live.max_regular_gifts}")
+        visible = len(snapshot.unique_gifts) + regular
+        hidden = metrics.stargifts_count
+        if hidden is not None and hidden >= 10 and hidden > visible + 5:
+            found.append(f"скрытая коллекция: {hidden} гифтов при {visible} на витрине")
         for gift in snapshot.unique_gifts:
             if gift.slug in listed:
                 continue
