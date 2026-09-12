@@ -9,15 +9,18 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.admin import setup_admin
 from bot.claims import ClaimStore, setup_claims
+from bot.emoji import PremiumEmojiFallbackMiddleware
 from config import Settings
 from core.runtime import LiveFilters
 
 
 def build_bot(settings: Settings) -> Bot:
-    return Bot(
+    bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    bot.session.middleware(PremiumEmojiFallbackMiddleware())
+    return bot
 
 
 def build_dispatcher(live: LiveFilters, claims: ClaimStore) -> Dispatcher:

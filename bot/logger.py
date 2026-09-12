@@ -68,10 +68,10 @@ def _gift_line(gift: UniqueGift) -> str:
     link = gift.nft_link
     if link.startswith("https://"):
         return (
-            f"• {_http_link(link, title)}{_esc(model)} — "
+            f"{e('gift')} {_http_link(link, title)}{_esc(model)} — "
             f"<code>{floor} TON</code> ({_esc(source)})"
         )
-    return f"• {_esc(title)}{_esc(model)} — <code>{floor} TON</code> ({_esc(source)})"
+    return f"{e('gift')} {_esc(title)}{_esc(model)} — <code>{floor} TON</code> ({_esc(source)})"
 
 
 def _plain(decision: FilterDecision, live: LiveFilters) -> str:

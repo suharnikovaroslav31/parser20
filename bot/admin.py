@@ -14,7 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.emoji import e
+from bot.emoji import e, kb_icon
 from core.runtime import LiveFilters
 
 LOGGER = logging.getLogger("tg_gifts.admin")
@@ -33,42 +33,46 @@ class EditFilter(StatesGroup):
     waiting_value = State()
 
 
+def _btn(text: str, callback: str, key: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=callback, **kb_icon(key))
+
+
 def _kb(live: LiveFilters) -> InlineKeyboardMarkup:
     on = "ON" if live.scanner_enabled else "OFF"
     age = "выкл" if not live.filter_seller_age or not live.max_account_age_days else str(live.max_account_age_days)
     prem = {True: "да", False: "нет", None: "любой"}[live.require_premium]
     rating_req = "да" if live.require_stars_rating else "нет"
     rows = [
-        [InlineKeyboardButton(text=f"{'■' if live.scanner_enabled else '□'} Сканер {on}", callback_data="tgl:scanner")],
+        [_btn(f"Сканер {on}", "tgl:scanner", "lightning" if live.scanner_enabled else "no")],
         [
-            InlineKeyboardButton(text=f"Цена мин {live.floor_min_ton:g}", callback_data="set:floor_min_ton"),
-            InlineKeyboardButton(text=f"Цена макс {live.floor_max_ton:g}", callback_data="set:floor_max_ton"),
+            _btn(f"Цена мин {live.floor_min_ton:g}", "set:floor_min_ton", "ton"),
+            _btn(f"Цена макс {live.floor_max_ton:g}", "set:floor_max_ton", "ton"),
         ],
         [
-            InlineKeyboardButton(text=f"NFT мин {live.min_unique_gifts}", callback_data="set:min_unique_gifts"),
-            InlineKeyboardButton(text=f"NFT макс {live.max_unique_gifts}", callback_data="set:max_unique_gifts"),
+            _btn(f"NFT мин {live.min_unique_gifts}", "set:min_unique_gifts", "gift"),
+            _btn(f"NFT макс {live.max_unique_gifts}", "set:max_unique_gifts", "gift"),
         ],
         [
-            InlineKeyboardButton(text=f"Рейтинг мин {live.stars_rating_min}", callback_data="set:stars_rating_min"),
-            InlineKeyboardButton(text=f"Рейтинг макс {live.stars_rating_max}", callback_data="set:stars_rating_max"),
+            _btn(f"Рейтинг мин {live.stars_rating_min}", "set:stars_rating_min", "star"),
+            _btn(f"Рейтинг макс {live.stars_rating_max}", "set:stars_rating_max", "star"),
         ],
-        [InlineKeyboardButton(text=f"Рейтинг обязателен: {rating_req}", callback_data="tgl:rating")],
+        [_btn(f"Рейтинг обязателен: {rating_req}", "tgl:rating", "crown")],
         [
-            InlineKeyboardButton(text=f"Возраст дн. {age}", callback_data="set:max_account_age_days"),
-            InlineKeyboardButton(text=f"Premium {prem}", callback_data="cycle:premium"),
+            _btn(f"Возраст дн. {age}", "set:max_account_age_days", "clock"),
+            _btn(f"Premium {prem}", "cycle:premium", "spark"),
         ],
         [
-            InlineKeyboardButton(text=f"Активность ≥ {live.min_activity_score}", callback_data="set:min_activity_score"),
-            InlineKeyboardButton(text=f"Круг {live.market_poll_sec}с", callback_data="set:market_poll_sec"),
+            _btn(f"Активность ≥ {live.min_activity_score}", "set:min_activity_score", "chart"),
+            _btn(f"Круг {live.market_poll_sec}с", "set:market_poll_sec", "fire"),
         ],
-        [InlineKeyboardButton(text=f"Антидубль {live.alert_cooldown_hours}ч", callback_data="set:alert_cooldown_hours")],
-        [InlineKeyboardButton(text="Обновить", callback_data="menu:refresh")],
+        [_btn(f"Антидубль {live.alert_cooldown_hours}ч", "set:alert_cooldown_hours", "warn")],
+        [_btn("Обновить", "menu:refresh", "lightning")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _menu_text(live: LiveFilters) -> str:
-    lines = "\n".join(f"• {row}" for row in live.summary_lines())
+    lines = "\n".join(f"{e('list')} {row}" for row in live.summary_lines())
     return (
         f"{e('gear')} <b>Админ-панель TG-Gifts</b>\n"
         f"{e('spark')} Настройки видны только вам.\n\n"

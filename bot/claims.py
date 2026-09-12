@@ -14,7 +14,7 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.emoji import e
+from bot.emoji import e, kb_icon
 
 LOGGER = logging.getLogger("tg_gifts.claims")
 TTL_SEC = 6 * 3600
@@ -66,11 +66,13 @@ def new_token() -> str:
 
 
 def lot_keyboard(token: str, nft_link: str) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text="Занять лот", callback_data=f"claim:{token}")]]
+    rows = [[InlineKeyboardButton(text="Занять лот", callback_data=f"claim:{token}", **kb_icon("check"))]]
     url = _http_url(nft_link)
     if url:
-        rows.append([InlineKeyboardButton(text="Открыть NFT", url=url)])
-    rows.append([InlineKeyboardButton(text="Чат BYRMALDAEVO", url="https://t.me/BYRMALDAEVO")])
+        rows.append([InlineKeyboardButton(text="Открыть NFT", url=url, **kb_icon("link"))])
+    rows.append(
+        [InlineKeyboardButton(text="Чат BYRMALDAEVO", url="https://t.me/BYRMALDAEVO", **kb_icon("chat"))]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
