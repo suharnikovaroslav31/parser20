@@ -1,19 +1,34 @@
 """
-Фильтры: Stars-рейтинг уровня 1, NFT в профиле, цена лота, Premium.
-Значения берутся из LiveFilters (админ-бот), не из замороженного .env.
+Фильтры: лох = ур.1 и 1–2 дешёвых NFT, не перекуп с витриной.
+Premium, канал и «живой» профиль не режем — иначе бот молчит.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
-from core.models import FilterDecision, ProfileSnapshot, UniqueGift
+from core.models import AccountMetrics, FilterDecision, ProfileSnapshot, UniqueGift
 from core.runtime import LiveFilters
 
 LOGGER = logging.getLogger("tg_gifts.filters")
+
+# Явный магазин/перекуп в био. «продам» само по себе не режем.
+_RESELLER_BIO = re.compile(
+    r"("
+    r"\bnft\b|нфт|"
+    r"resale|ресейл|"
+    r"tonnel|portals?|getgems|\bmrkt\b|fragment|"
+    r"скупк[ауи]|купл[юи]\s*(нфт|nft|гифт)|продам\s*(нфт|nft|гифт)|"
+    r"floor\s*price|маркетплейс|gifts?\s*shop|"
+    r"unique\s*gifts?|star\s*gifts?|"
+    r"t\.me/nft"
+    r")",
+    re.IGNORECASE,
+)
 
 _ID_ANCHORS: tuple[tuple[int, datetime], ...] = (
     (1, datetime(2013, 8, 14, tzinfo=timezone.utc)),
@@ -113,6 +128,25 @@ def compute_activity_score(
     return max(0, min(100, score))
 
 
+def profile_richness(metrics: AccountMetrics) -> int:
+    """Насколько профиль «живой» без учёта NFT — у лоха должен быть низкий."""
+    return compute_activity_score(
+        username=metrics.username,
+        is_premium=metrics.is_premium,
+        is_verified=metrics.is_verified,
+        has_photo=metrics.has_photo,
+        bio=metrics.bio,
+        personal_channel_id=metrics.personal_channel_id,
+        common_chats_count=metrics.common_chats_count,
+        unique_gift_count=0,
+        public_channel_count=metrics.public_channel_count,
+    )
+
+
+def looks_like_reseller_bio(bio: str) -> bool:
+    return bool(_RESELLER_BIO.search(bio or ""))
+
+
 class ProfileFilter:
     def __init__(self, live: LiveFilters) -> None:
         self.live = live
@@ -182,11 +216,16 @@ class ProfileFilter:
         if metrics.activity_score < live.min_activity_score:
             reasons.append(f"активность {metrics.activity_score} < {live.min_activity_score}")
 
+        if live.require_noob_profile:
+            reasons.extend(self._noob_reasons(snapshot, live))
+
         matched = not reasons
         if matched:
             self.matched += 1
+            richness = profile_richness(metrics)
             reasons.append(
-                f"лох: рейтинг ур.{level}, {unique_count} NFT, лот {price:g} TON, акк ~{metrics.account_age_days}д"
+                f"лох: рейтинг ур.{level}, {unique_count} NFT, лот {price:g} TON, "
+                f"профиль {richness}/100, акк ~{metrics.account_age_days}д"
             )
             LOGGER.info("MATCH user=%s %s", metrics.user_id, reasons[-1])
         else:
@@ -201,6 +240,37 @@ class ProfileFilter:
             snapshot=snapshot,
             cheapest_gift=cheapest,
         )
+
+    def _noob_reasons(self, snapshot: ProfileSnapshot, live: LiveFilters) -> list[str]:
+        """Отсекает перекупов. Обычный человек с ур.1 и 1 NFT проходит."""
+        metrics = snapshot.metrics
+        found: list[str] = []
+        if looks_like_reseller_bio(metrics.bio):
+            found.append("в био признаки перекупа")
+        listed = {gift.slug for gift in snapshot.cheap_gifts if gift.slug}
+        hidden_nfts = [
+            gift for gift in snapshot.unique_gifts if gift.unsaved and gift.slug not in listed
+        ]
+        if hidden_nfts:
+            found.append(f"скрытые NFT: {len(hidden_nfts)}")
+        richness = profile_richness(metrics)
+        if live.max_activity_score > 0 and richness > live.max_activity_score:
+            found.append(f"профиль слишком живой {richness} > {live.max_activity_score}")
+        regular = len(snapshot.regular_gifts)
+        if live.max_regular_gifts > 0 and regular > live.max_regular_gifts:
+            found.append(f"обычных гифтов {regular} > {live.max_regular_gifts}")
+        visible = len(snapshot.unique_gifts) + regular
+        hidden = metrics.stargifts_count
+        if hidden is not None and hidden >= 10 and hidden > visible + 5:
+            found.append(f"скрытая коллекция: {hidden} гифтов при {visible} на витрине")
+        for gift in snapshot.unique_gifts:
+            if gift.slug in listed:
+                continue
+            floor = gift.best_floor_ton
+            if floor is not None and floor >= live.floor_max_ton:
+                found.append("в профиле есть дорогой NFT — не один случайный лот")
+                break
+        return found
 
     @staticmethod
     def _cheapest(gifts: list[UniqueGift]) -> Optional[UniqueGift]:

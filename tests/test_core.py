@@ -33,12 +33,13 @@ def _metrics(**kwargs) -> AccountMetrics:
         stars_rating_stars=10,
         stars_fetched=True,
         gifts_fetched=True,
+        stargifts_count=None,
     )
     base.update(kwargs)
     return AccountMetrics(**base)
 
 
-def _gift(slug: str = "PlushPepe-1", price: float = 2.0) -> UniqueGift:
+def _gift(slug: str = "PlushPepe-1", price: float = 2.0, *, unsaved: bool = False) -> UniqueGift:
     return UniqueGift(
         slug=slug,
         title="Plush Pepe",
@@ -47,6 +48,7 @@ def _gift(slug: str = "PlushPepe-1", price: float = 2.0) -> UniqueGift:
         telegram_floor_ton=price,
         market_floor_ton=price,
         market_source="telegram_resale",
+        unsaved=unsaved,
     )
 
 
@@ -100,6 +102,9 @@ class FilterTests(unittest.TestCase):
             max_account_age_days=None,
             filter_seller_age=False,
             min_activity_score=0,
+            max_activity_score=0,
+            max_regular_gifts=0,
+            require_noob_profile=True,
         )
         self.flt = ProfileFilter(self.live)
 
@@ -146,6 +151,66 @@ class FilterTests(unittest.TestCase):
         decision = self.flt.evaluate(snap)
         self.assertFalse(decision.matched)
 
+    def test_premium_still_matches(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(is_premium=True), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+    def test_skip_reseller_bio(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(bio="скупка nft / mrkt"), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("био" in reason for reason in decision.reasons))
+
+    def test_personal_channel_still_matches(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(personal_channel_id=123), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+    def test_skip_hidden_collection(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=20), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("скрыт" in reason for reason in decision.reasons))
+
+    def test_few_extra_gifts_still_match(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=4), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+    def test_skip_hidden_nft(self) -> None:
+        listed = _gift("A-1", 2.0)
+        hidden = _gift("B-2", 3.0, unsaved=True)
+        snap = _snapshot(gifts=[listed, hidden], metrics=_metrics(), price=2.0)
+        snap.cheap_gifts = [listed]
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("скрыт" in reason for reason in decision.reasons))
+
+    def test_listed_only_hidden_from_profile_still_matches(self) -> None:
+        listed = _gift("A-1", 2.0, unsaved=True)
+        snap = _snapshot(gifts=[listed], metrics=_metrics(), price=2.0)
+        snap.cheap_gifts = [listed]
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+    def test_skip_expensive_second_nft(self) -> None:
+        listed = _gift("A-1", 2.0)
+        rich = _gift("B-2", 40.0)
+        snap = _snapshot(gifts=[listed, rich], metrics=_metrics(), price=2.0)
+        snap.cheap_gifts = [listed]
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+
+    def test_empty_noob_still_matches(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift()],
+            metrics=_metrics(username=None, has_photo=False, bio=""),
+            price=2.0,
+        )
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
 
 class FilterSchemaTests(unittest.TestCase):
     def test_schema2_restores_original_filters(self) -> None:
@@ -178,7 +243,10 @@ class FilterSchemaTests(unittest.TestCase):
             self.assertFalse(live.filter_seller_age)
             self.assertIsNone(live.max_account_age_days)
             self.assertEqual(live.floor_max_ton, 10.0)
-            self.assertGreaterEqual(live.schema_version, 5)
+            self.assertGreaterEqual(live.schema_version, 7)
+            self.assertTrue(live.require_noob_profile)
+            self.assertEqual(live.max_activity_score, 0)
+            self.assertIsNone(live.require_premium)
 
 
 class SlugTests(unittest.TestCase):

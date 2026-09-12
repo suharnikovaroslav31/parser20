@@ -906,7 +906,7 @@ class GiftMarketScanner:
         user: Optional[User],
         listed: UniqueGift,
     ) -> tuple[list[UniqueGift], list, bool]:
-        """Публичные unique NFT. False = профиль не удалось открыть."""
+        """Все unique NFT, включая скрытые с витрины. False = профиль не открылся."""
         if user is None or user.bot or getattr(user, "deleted", False):
             return [], [], False
         try:

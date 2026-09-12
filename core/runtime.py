@@ -15,9 +15,9 @@ from config import Settings
 
 LOGGER = logging.getLogger("tg_gifts.runtime")
 DEFAULT_PATH = Path("data/filters.json")
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 
-# Профиль «лох»: рейтинг 1, мало NFT. Возраст аккаунта не фильтруем.
+# Лох = ур.1 и 1–2 дешёвых NFT. Premium/канал не режем, иначе тишина.
 ORIGINAL_FILTERS: dict[str, Any] = {
     "floor_min_ton": 0.0,
     "floor_max_ton": 10.0,
@@ -28,6 +28,10 @@ ORIGINAL_FILTERS: dict[str, Any] = {
     "require_stars_rating": True,
     "max_account_age_days": None,
     "min_activity_score": 0,
+    "max_activity_score": 0,
+    "max_regular_gifts": 0,
+    "require_premium": None,
+    "require_noob_profile": True,
     "filter_seller_age": False,
     "alert_cooldown_hours": 24,
     "market_poll_sec": 45,
@@ -47,7 +51,10 @@ class LiveFilters:
     max_account_age_days: Optional[int] = None
     require_premium: Optional[bool] = None
     min_activity_score: int = 0
+    max_activity_score: int = 0
+    max_regular_gifts: int = 0
     filter_seller_age: bool = False
+    require_noob_profile: bool = True
     alert_cooldown_hours: int = 24
     market_poll_sec: int = 45
     community_url: str = "https://t.me/BYRMALDAEVO"
@@ -68,6 +75,9 @@ class LiveFilters:
             max_account_age_days=None,
             require_premium=settings.require_premium,
             min_activity_score=int(settings.min_activity_score),
+            max_activity_score=0,
+            max_regular_gifts=0,
+            require_noob_profile=True,
             filter_seller_age=False,
             alert_cooldown_hours=int(settings.alert_cooldown_hours),
             market_poll_sec=int(settings.market_poll_sec),
@@ -112,7 +122,7 @@ class LiveFilters:
                 setattr(self, key, value)
             self.schema_version = SCHEMA_VERSION
             self.save()
-            LOGGER.info("Фильтры: лох = рейтинг 1, ≤2 NFT, возраст не важен")
+            LOGGER.info("Фильтры: лох = рейтинг 1, ≤2 NFT, без витрины перекупа")
 
     def update(self, **kwargs: Any) -> None:
         for key, value in kwargs.items():
@@ -132,7 +142,10 @@ class LiveFilters:
             + (" (обязателен)" if self.require_stars_rating else ""),
             f"Возраст аккаунта: {age}",
             f"Premium: {premium}",
+            f"Лох-профиль: {'да' if self.require_noob_profile else 'нет'}",
             f"Мин. активность: {self.min_activity_score}",
+            f"Макс. живость профиля: {'выкл' if self.max_activity_score <= 0 else self.max_activity_score}",
+            f"Обычных гифтов: {'любое' if self.max_regular_gifts <= 0 else f'≤ {self.max_regular_gifts}'}",
             f"Пауза между кругами: {self.market_poll_sec}с",
             f"Антидубль: {self.alert_cooldown_hours}ч",
         ]

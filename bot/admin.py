@@ -57,12 +57,25 @@ def _kb(live: LiveFilters) -> InlineKeyboardMarkup:
             _btn(f"Рейтинг макс {live.stars_rating_max}", "set:stars_rating_max", "star"),
         ],
         [_btn(f"Рейтинг обязателен: {rating_req}", "tgl:rating", "star")],
+        [_btn(f"Лох-профиль: {'да' if live.require_noob_profile else 'нет'}", "tgl:noob", "user")],
         [
             _btn(f"Возраст дн. {age}", "set:max_account_age_days", "chart"),
             _btn(f"Premium {prem}", "cycle:premium", "spark"),
         ],
         [
             _btn(f"Активность ≥ {live.min_activity_score}", "set:min_activity_score", "chart"),
+            _btn(
+                f"Живость {'выкл' if live.max_activity_score <= 0 else f'≤ {live.max_activity_score}'}",
+                "set:max_activity_score",
+                "chart",
+            ),
+        ],
+        [
+            _btn(
+                f"Обычных гифтов {'любое' if live.max_regular_gifts <= 0 else f'≤ {live.max_regular_gifts}'}",
+                "set:max_regular_gifts",
+                "gift",
+            ),
             _btn(f"Круг {live.market_poll_sec}с", "set:market_poll_sec", "lightning"),
         ],
         [_btn(f"Антидубль {live.alert_cooldown_hours}ч", "set:alert_cooldown_hours", "bell")],
@@ -78,7 +91,7 @@ def _menu_text(live: LiveFilters) -> str:
         f"{e('spark')} Настройки видны только вам.\n\n"
         f"{lines}\n\n"
         f"{e('chat')} Чат: <a href=\"https://t.me/BYRMALDAEVO\">BYRMALDAEVO</a>\n"
-        f"{e('warn')} Лох = открыли профиль: Stars ур.1, ≤2 NFT. Возраст аккаунта не фильтруем.\n"
+        f"{e('warn')} Лох = ур.1, ≤2 NFT до 10 TON, без скрытых NFT. Режем перекупов (био-магазин, спрятанная коллекция, дорогой второй NFT). Premium и канал — ок.\n"
         f"Нажмите кнопку, чтобы сменить значение."
     )
 
@@ -93,6 +106,8 @@ def _prompts() -> dict[str, str]:
         "stars_rating_max": "Макс. уровень Stars-рейтинга (1 = только первый уровень)",
         "max_account_age_days": "Макс. возраст аккаунта в днях (0 = выключить фильтр)",
         "min_activity_score": "Мин. эвристика активности 0–100 (0 = выкл)",
+        "max_activity_score": "Макс. живость профиля 0–100 (0 = не режем по живости)",
+        "max_regular_gifts": "Макс. обычных гифтов на витрине (0 = не режем)",
         "market_poll_sec": "Пауза между кругами маркета, секунды (15–600)",
         "alert_cooldown_hours": "Часы антидубля алертов",
     }
@@ -164,6 +179,13 @@ def setup_admin(live: LiveFilters) -> Router:
         if isinstance(call.message, Message):
             await _send_menu(call.message, live, edit=True)
 
+    @router.callback_query(F.data == "tgl:noob", IsAdmin())
+    async def toggle_noob(call: CallbackQuery) -> None:
+        live.update(require_noob_profile=not live.require_noob_profile)
+        await call.answer("Лох-профиль " + ("вкл" if live.require_noob_profile else "выкл"))
+        if isinstance(call.message, Message):
+            await _send_menu(call.message, live, edit=True)
+
     @router.callback_query(F.data == "cycle:premium", IsAdmin())
     async def cycle_premium(call: CallbackQuery) -> None:
         order: list[Optional[bool]] = [None, True, False]
@@ -217,13 +239,15 @@ def _parse_field(field: str, raw: str) -> object:
         "stars_rating_min",
         "stars_rating_max",
         "min_activity_score",
+        "max_activity_score",
+        "max_regular_gifts",
         "market_poll_sec",
         "alert_cooldown_hours",
     }:
         number = int(float(raw))
         if field == "market_poll_sec" and not 15 <= number <= 600:
             raise ValueError("poll 15–600")
-        if field == "min_activity_score" and not 0 <= number <= 100:
+        if field in {"min_activity_score", "max_activity_score"} and not 0 <= number <= 100:
             raise ValueError("активность 0–100")
         if number < 0:
             raise ValueError("нужно ≥ 0")

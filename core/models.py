@@ -115,6 +115,7 @@ class UniqueGift:
     fragment_url: Optional[str] = None
     seller_id: Optional[int] = None
     seller_name: Optional[str] = None
+    unsaved: bool = False
 
     @property
     def best_floor_ton(self) -> Optional[float]:
@@ -165,6 +166,7 @@ class AccountMetrics:
     stars_rating_stars: Optional[int] = None
     stars_fetched: bool = False
     gifts_fetched: bool = False
+    stargifts_count: Optional[int] = None
 
     @property
     def display_name(self) -> str:

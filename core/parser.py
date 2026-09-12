@@ -430,6 +430,7 @@ class ProfileScanner:
         stars_level: Optional[int] = None
         stars_value: Optional[int] = None
         stars_fetched = False
+        stargifts_count: Optional[int] = None
         try:
             input_user = await self._input_user(user)
             try:
@@ -451,6 +452,15 @@ class ProfileScanner:
                 stars_value = getattr(rating, "stars", None)
                 if stars_level is None:
                     stars_level = getattr(rating, "current_level", None)
+            for name in ("stargifts_count", "star_gifts_count"):
+                raw_count = getattr(full_user, name, None)
+                if raw_count is None:
+                    continue
+                try:
+                    stargifts_count = int(raw_count)
+                    break
+                except (TypeError, ValueError):
+                    continue
             for chat in getattr(full, "chats", []) or []:
                 if isinstance(chat, Channel) and getattr(chat, "username", None):
                     public_channels += 1
@@ -499,6 +509,7 @@ class ProfileScanner:
             stars_rating_level=parsed_level,
             stars_rating_stars=parsed_stars,
             stars_fetched=stars_fetched,
+            stargifts_count=stargifts_count,
         )
 
     async def fetch_saved_gifts(
@@ -508,17 +519,18 @@ class ProfileScanner:
         stop_after_unique: Optional[int] = None,
     ) -> tuple[list[UniqueGift], list[RegularGift]]:
         """
-        Публичные подарки профиля.
+        Все unique NFT профиля, включая скрытые с витрины.
 
-        exclude_unsaved=True — только то, что пользователь закрепил/показал.
+        exclude_unsaved не ставим: иначе лох с спрятанной коллекцией выглядит как 1 NFT.
         """
         unique: list[UniqueGift] = []
         regular: list[RegularGift] = []
         offset = ""
         pages = 0
-        max_pages = 2 if stop_after_unique is not None else 40
+        max_pages = 4 if stop_after_unique is not None else 40
         input_peer = await self._input_peer(user)
         supported = inspect.signature(GetSavedStarGiftsRequest).parameters
+        include_hidden = "exclude_unsaved" in supported
         while pages < max_pages:
             pages += 1
             kwargs: dict[str, Any] = {
@@ -526,8 +538,8 @@ class ProfileScanner:
                 "offset": offset,
                 "limit": self.settings.gift_page_size,
             }
-            if "exclude_unsaved" in supported and stop_after_unique is None:
-                kwargs["exclude_unsaved"] = True
+            if include_hidden:
+                kwargs["exclude_unsaved"] = False
             try:
                 result = await self._flood.call(
                     lambda payload=kwargs: self.client(GetSavedStarGiftsRequest(**payload)),
@@ -554,6 +566,14 @@ class ProfileScanner:
                 break
             offset = next_offset
         return unique, regular
+
+    @staticmethod
+    def _gift_is_hidden(saved: Any) -> bool:
+        if bool(getattr(saved, "unsaved", False)):
+            return True
+        if getattr(saved, "saved", None) is False:
+            return True
+        return False
 
     def _parse_saved_gift(self, saved: Any) -> tuple[Optional[UniqueGift], Optional[RegularGift]]:
         gift = getattr(saved, "gift", saved)
@@ -590,6 +610,7 @@ class ProfileScanner:
                 availability_issued=getattr(gift, "availability_issued", None),
                 availability_total=getattr(gift, "availability_total", None),
                 on_resale=bool(getattr(gift, "resell_amount", None)),
+                unsaved=self._gift_is_hidden(saved),
             )
             return unique, None
 
