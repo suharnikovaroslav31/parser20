@@ -178,6 +178,19 @@ class GiftMarketScanner:
     def _stopping(self) -> bool:
         return self.stop_event is not None and self.stop_event.is_set()
 
+    async def _iter_source(self, name: str, agen: AsyncIterator[ProfileSnapshot]) -> AsyncIterator[ProfileSnapshot]:
+        self.stage = name
+        LOGGER.info("%s: запрос лотов", name)
+        try:
+            async for snapshot in agen:
+                if self._stopping():
+                    return
+                yield snapshot
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("%s упал — иду к следующему источнику", name)
+
     def _seller_from_users(self, owner_id: Optional[int], users: dict[int, User]) -> Optional[User]:
         """Только пользователи из ответа маркета. Без get_entity по ID."""
         if not owner_id:
@@ -204,7 +217,6 @@ class GiftMarketScanner:
         self._tg_priced = 0
         self._seller_cache = {}
         self._username_cache = {}
-        finished = False
         LOGGER.info(
             "Фильтры сейчас: цена %s–%s TON, NFT %s–%s, рейтинг %s–%s, возраст ≤%sд",
             self.live.floor_min_ton,
@@ -219,11 +231,7 @@ class GiftMarketScanner:
             if not await self.scanner._flood.ensure_connected():
                 LOGGER.error("Telegram нет связи — этот проход пропускаю")
                 return
-            self.stage = "telegram-catalog"
-            LOGGER.info("Telegram: каталог коллекций")
-            async for snapshot in self._iter_telegram_resale():
-                if self._stopping():
-                    return
+            async for snapshot in self._iter_source("telegram-catalog", self._iter_telegram_resale()):
                 telegram_count += 1
                 yield snapshot
             LOGGER.info(
@@ -232,62 +240,36 @@ class GiftMarketScanner:
                 telegram_count,
                 self._skipped_known,
             )
-            if self._stopping():
-                return
-
-            self.stage = "mrkt"
-            LOGGER.info("MRKT: HTTP-запрос лотов")
             mrkt_count = 0
-            async for snapshot in self._iter_mrkt_listings():
-                if self._stopping():
-                    return
+            async for snapshot in self._iter_source("mrkt", self._iter_mrkt_listings()):
                 mrkt_count += 1
                 yield snapshot
             LOGGER.info("MRKT: снимков продавца %s", mrkt_count)
-            if self._stopping():
-                return
-
-            self.stage = "tonnel"
-            LOGGER.info("Tonnel: HTTP-запрос лотов")
             tonnel_count = 0
-            async for snapshot in self._iter_tonnel_listings():
-                if self._stopping():
-                    return
+            async for snapshot in self._iter_source("tonnel", self._iter_tonnel_listings()):
                 tonnel_count += 1
                 yield snapshot
             LOGGER.info("Tonnel: снимков продавца %s", tonnel_count)
-            if self._stopping():
-                return
-
-            self.stage = "portal"
-            LOGGER.info("Portals: HTTP-запрос лотов")
             portal_count = 0
-            async for snapshot in self._iter_portal_listings():
-                if self._stopping():
-                    return
+            async for snapshot in self._iter_source("portal", self._iter_portal_listings()):
                 portal_count += 1
                 yield snapshot
             LOGGER.info("Portals: снимков продавца %s", portal_count)
-            if self._stopping():
-                return
-
-            self.stage = "getgems"
-            LOGGER.info("Getgems: HTTP-запрос лотов")
             getgems_count = 0
-            async for snapshot in self._iter_getgems_listings():
-                if self._stopping():
-                    return
+            async for snapshot in self._iter_source("getgems", self._iter_getgems_listings()):
                 getgems_count += 1
                 yield snapshot
             LOGGER.info("Getgems: снимков продавца %s", getgems_count)
-            self.tracker.commit_scan()
-            finished = True
-            self.stage = "idle"
-        except Exception:
+        except asyncio.CancelledError:
             raise
+        except Exception:
+            LOGGER.exception("проход маркета сломался — круг не убиваю")
         finally:
-            if not finished:
+            try:
+                self.tracker.commit_scan()
+            except Exception:
                 self.tracker.discard_partial()
+            self.stage = "idle"
 
     async def _iter_telegram_resale(self) -> AsyncIterator[ProfileSnapshot]:
         if not self.scanner.client.is_connected():
@@ -321,9 +303,9 @@ class GiftMarketScanner:
             try:
                 async for snapshot in self._resale_collection(gift_id, title, ton_usd):
                     yield snapshot
-            except (RPCError, asyncio.TimeoutError, asyncio.CancelledError) as exc:
-                if isinstance(exc, asyncio.CancelledError):
-                    raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
                 LOGGER.warning("resale %s (%s): %s", title, gift_id, exc)
 
     async def _gift_catalog(self) -> list[Any]:

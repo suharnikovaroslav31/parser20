@@ -167,7 +167,7 @@ class GiftLogger:
                 await self._deliver(html_text, markup, html=True)
                 return True
             except TelegramRetryAfter as exc:
-                wait = min(int(exc.retry_after) + 1, 60)
+                wait = min(int(getattr(exc, "retry_after", 5) or 5) + 1, 20)
                 LOGGER.warning("группа flood, жду %sс (попытка %s)", wait, attempt + 1)
                 await asyncio.sleep(wait)
                 last_error = exc
@@ -183,7 +183,7 @@ class GiftLogger:
                     await self._deliver(html_text if use_html else plain, lot_keyboard(token, nft), html=use_html)
                     return True
                 except TelegramRetryAfter as exc2:
-                    wait = min(int(exc2.retry_after) + 1, 60)
+                    wait = min(int(getattr(exc2, "retry_after", 5) or 5) + 1, 20)
                     LOGGER.warning("группа flood после fallback, жду %sс", wait)
                     await asyncio.sleep(wait)
                     continue
@@ -192,22 +192,30 @@ class GiftLogger:
                         await self._deliver(plain, lot_keyboard(token, nft), html=False)
                         return True
                     except TelegramRetryAfter as exc3:
-                        await asyncio.sleep(min(int(exc3.retry_after) + 1, 60))
+                        await asyncio.sleep(min(int(getattr(exc3, "retry_after", 5) or 5) + 1, 20))
                         continue
                     except TelegramAPIError as exc3:
                         LOGGER.error("Не удалось отправить лог: %s", exc3)
                         return False
             except TelegramAPIError as exc:
-                LOGGER.error("Не удалось отправить лог: %s", exc)
-                return False
+                last_error = exc
+                LOGGER.warning("отправка: %s", exc)
+                continue
+            except asyncio.TimeoutError as exc:
+                last_error = exc
+                LOGGER.warning("отправка зависла, пробую ещё")
+                continue
         LOGGER.error("карточка не ушла после ретраев: %s", last_error)
         return False
 
     async def _deliver(self, text: str, markup, *, html: bool) -> None:
-        await self.bot.send_message(
-            chat_id=self.log_group_id,
-            text=text,
-            reply_markup=markup,
-            disable_web_page_preview=True,
-            parse_mode=ParseMode.HTML if html else None,
+        await asyncio.wait_for(
+            self.bot.send_message(
+                chat_id=self.log_group_id,
+                text=text,
+                reply_markup=markup,
+                disable_web_page_preview=True,
+                parse_mode=ParseMode.HTML if html else None,
+            ),
+            timeout=20,
         )

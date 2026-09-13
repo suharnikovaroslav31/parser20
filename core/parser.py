@@ -141,29 +141,27 @@ class TelegramFloodControl:
                 LOGGER.warning("reconnect не удался: %s", exc)
 
     async def _await_rpc(self, factory, label: str) -> Any:
+        # Без shield: иначе зависший RPC держит слот семафора часами, сканер встаёт.
         task = asyncio.create_task(self.limiter.run(factory), name=f"tg:{label}")
         try:
-            return await asyncio.wait_for(asyncio.shield(task), timeout=self.RPC_TIMEOUT)
-        except asyncio.TimeoutError:
-            LOGGER.warning("Telegram timeout %s — reconnect", label)
-            await self._recover(label)
-            try:
-                await asyncio.wait_for(task, timeout=8)
-            except Exception:
-                if not task.done():
-                    task.cancel()
-                    try:
-                        await task
-                    except Exception:
-                        pass
-            raise
+            return await asyncio.wait_for(task, timeout=self.RPC_TIMEOUT)
         except asyncio.CancelledError:
             if not task.done():
                 task.cancel()
                 try:
                     await task
-                except Exception:
+                except (Exception, asyncio.CancelledError):
                     pass
+            raise
+        except asyncio.TimeoutError:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (Exception, asyncio.CancelledError):
+                    pass
+            LOGGER.warning("Telegram timeout %s — reconnect", label)
+            await self._recover(label)
             raise
 
     async def call(self, factory, *, retries: int = 4, label: str = "rpc") -> Any:
@@ -542,7 +540,7 @@ class ProfileScanner:
                 kwargs["exclude_unsaved"] = False
             try:
                 result = await self._flood.call(
-                    lambda payload=kwargs: self.client(GetSavedStarGiftsRequest(**payload)),
+                    lambda payload=dict(kwargs): self.client(GetSavedStarGiftsRequest(**payload)),
                     label=f"gifts:{user.id}",
                 )
             except (RPCError, asyncio.TimeoutError) as exc:

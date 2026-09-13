@@ -11,7 +11,7 @@ import os
 import signal
 import sys
 import warnings
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from config import Settings, get_settings
 from bot.app import build_bot, build_dispatcher
@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260912-6"
+BUILD = "20260913-1"
 
 
 def setup_logging() -> None:
@@ -77,6 +77,7 @@ class AnalyticsApp:
         self._seen = 0
         self._matched = 0
         self._tasks: list[asyncio.Task] = []
+        self._pass_task: Optional[asyncio.Task] = None
 
     def request_stop(self, *_args: object) -> None:
         self._sigint += 1
@@ -150,7 +151,7 @@ class AnalyticsApp:
         try:
             decision = self.filters.evaluate(snapshot)
             try:
-                await self.storage.save_snapshot(snapshot, decision.matched)
+                await asyncio.wait_for(self.storage.save_snapshot(snapshot, decision.matched), timeout=4)
             except Exception:
                 LOGGER.exception("Не удалось сохранить снимок user=%s", snapshot.metrics.user_id)
             opened = snapshot.metrics.stars_fetched and snapshot.metrics.gifts_fetched
@@ -165,7 +166,7 @@ class AnalyticsApp:
                 if opened:
                     self.markets.tracker.mark(key)
                 return
-            sent = await self.logger_bot.send(decision)
+            sent = await asyncio.wait_for(self.logger_bot.send(decision), timeout=90)
             if sent:
                 await self.storage.mark_alerted(snapshot.metrics.user_id, snapshot.fingerprint, cooldown)
                 if opened:
@@ -191,6 +192,13 @@ class AnalyticsApp:
                 snapshot.metrics.user_id,
             )
 
+    async def _one_pass(self) -> None:
+        self.filters.reset_stats()
+        async for snapshot in self.markets.iter_offers():
+            if self._stop.is_set() or not self.live.scanner_enabled:
+                break
+            await self.handle_snapshot(snapshot)
+
     async def _scan_loop(self, live: bool) -> None:
         while not self._stop.is_set():
             if not self.live.scanner_enabled:
@@ -208,14 +216,13 @@ class AnalyticsApp:
                     continue
                 continue
             LOGGER.info("Старт прохода Telegram Gift Market + MRKT")
-            self.filters.reset_stats()
+            self._pass_task = asyncio.create_task(self._one_pass(), name="market-pass")
             try:
-                async for snapshot in self.markets.iter_offers():
-                    if self._stop.is_set() or not self.live.scanner_enabled:
-                        break
-                    await self.handle_snapshot(snapshot)
+                await self._pass_task
             except asyncio.CancelledError:
-                raise
+                if self._stop.is_set():
+                    raise
+                LOGGER.warning("проход сорван — сразу новый круг")
             except Exception as exc:
                 name = type(exc).__name__
                 if any(token in name.upper() for token in ("AUTHKEY", "UNAUTHORIZED", "SESSIONREVOKED")):
@@ -223,9 +230,11 @@ class AnalyticsApp:
                     try:
                         await asyncio.wait_for(self._stop.wait(), timeout=60)
                     except asyncio.TimeoutError:
-                        continue
-                    continue
-                LOGGER.exception("Ошибка прохода по маркету")
+                        pass
+                else:
+                    LOGGER.exception("Ошибка прохода по маркету")
+            finally:
+                self._pass_task = None
             LOGGER.info("Фильтры за проход: %s", self.filters.dump_stats())
             LOGGER.info("Проход: seen=%s matched=%s", self._seen, self._matched)
             if not live or self._stop.is_set():
@@ -247,24 +256,90 @@ class AnalyticsApp:
                 except Exception:
                     pass
                 LOGGER.info(
-                    "жив | stage=%s seen=%s matched=%s tg=%s",
+                    "жив | stage=%s seen=%s matched=%s tg=%s pass=%s",
                     self.markets.stage,
                     self._seen,
                     self._matched,
                     "ok" if connected else "нет",
+                    "да" if self._pass_task is not None and not self._pass_task.done() else "нет",
                 )
 
+    async def _watchdog(self) -> None:
+        last = ""
+        stale = 0
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=20)
+                return
+            except asyncio.TimeoutError:
+                pass
+            mark = f"{self.markets.stage}|{self._seen}|{self._matched}"
+            active = self._pass_task is not None and not self._pass_task.done()
+            if not active or self.markets.stage in {"idle", ""}:
+                last = mark
+                stale = 0
+                continue
+            if mark == last:
+                stale += 1
+            else:
+                stale = 0
+            last = mark
+            if stale < 12:
+                continue
+            LOGGER.error(
+                "сканер завис на %s seen=%s — рву проход и переподключаю Telegram",
+                self.markets.stage,
+                self._seen,
+            )
+            try:
+                await self.scanner._flood._recover("watchdog")
+            except Exception:
+                LOGGER.exception("watchdog reconnect")
+            task = self._pass_task
+            if task is not None and not task.done():
+                task.cancel()
+            stale = 0
+
+    async def _forever(self, name: str, factory: Callable[[], Awaitable[None]]) -> None:
+        while not self._stop.is_set():
+            try:
+                await factory()
+            except asyncio.CancelledError:
+                if self._stop.is_set():
+                    raise
+                LOGGER.warning("%s отменён — поднимаю снова", name)
+            except Exception:
+                LOGGER.exception("%s упал", name)
+            if self._stop.is_set():
+                return
+            LOGGER.error("%s перезапуск через 5с", name)
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=5)
+                return
+            except asyncio.TimeoutError:
+                continue
+
     async def run(self, *, live: bool) -> None:
-        poll_task = scan_task = beat_task = stopper = None
+        poll_task = scan_task = beat_task = watch_task = stopper = None
         try:
             await self.start()
             poll_task = asyncio.create_task(
-                self.dispatcher.start_polling(self.bot, handle_signals=False),
+                self._forever(
+                    "бот",
+                    lambda: self.dispatcher.start_polling(self.bot, handle_signals=False),
+                ),
                 name="aiogram-polling",
             )
-            scan_task = asyncio.create_task(self._scan_loop(live), name="market-scan")
+            if live:
+                scan_task = asyncio.create_task(
+                    self._forever("сканер", lambda: self._scan_loop(True)),
+                    name="market-scan",
+                )
+            else:
+                scan_task = asyncio.create_task(self._scan_loop(False), name="market-scan")
             beat_task = asyncio.create_task(self._heartbeat(), name="heartbeat")
-            self._tasks = [poll_task, scan_task, beat_task]
+            watch_task = asyncio.create_task(self._watchdog(), name="watchdog")
+            self._tasks = [poll_task, scan_task, beat_task, watch_task]
             stopper = asyncio.create_task(self._stop.wait(), name="stop-wait")
             if live:
                 await stopper
@@ -277,11 +352,15 @@ class AnalyticsApp:
         finally:
             LOGGER.info("Останавливаю задачи...")
             self._stop.set()
-            for task in (scan_task, poll_task, beat_task, stopper):
+            for task in (scan_task, poll_task, beat_task, watch_task, stopper, self._pass_task):
                 if task is not None:
                     task.cancel()
             await asyncio.gather(
-                *(task for task in (scan_task, poll_task, beat_task, stopper) if task is not None),
+                *(
+                    task
+                    for task in (scan_task, poll_task, beat_task, watch_task, stopper, self._pass_task)
+                    if task is not None
+                ),
                 return_exceptions=True,
             )
             await self.close()
@@ -322,6 +401,11 @@ async def _amain(once: bool) -> None:
     settings = get_settings()
     app = AnalyticsApp(settings)
     loop = asyncio.get_running_loop()
+
+    def _on_asyncio_error(_loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        LOGGER.error("asyncio: %s", context.get("message"), exc_info=context.get("exception"))
+
+    loop.set_exception_handler(_on_asyncio_error)
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, app.request_stop)

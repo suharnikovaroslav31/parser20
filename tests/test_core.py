@@ -281,8 +281,20 @@ class ProfileNftCountTests(unittest.TestCase):
 
 class TrackerVersionTests(unittest.TestCase):
     def test_tracker_version_bumped(self) -> None:
-        self.assertGreaterEqual(TRACKER_VERSION, 6)
+        self.assertGreaterEqual(TRACKER_VERSION, 7)
         self.assertTrue(callable(ListingTracker))
+
+    def test_expired_lot_is_processed_again(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "seen.json"
+            tracker = ListingTracker(path)
+            tracker.mark("tg:PlushPepe-1")
+            self.assertFalse(tracker.should_process("tg:PlushPepe-1"))
+            tracker._done["tg:PlushPepe-1"] = 0
+            self.assertTrue(tracker.should_process("tg:PlushPepe-1"))
 
 
 class NanotonTests(unittest.TestCase):
