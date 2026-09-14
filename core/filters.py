@@ -1,6 +1,6 @@
 """
-Фильтры: лох = ур.1 и 1–2 дешёвых NFT, не перекуп с витриной.
-Premium, канал и «живой» профиль не режем — иначе бот молчит.
+Фильтры: мамонт = ур.1 и 1–2 дешёвых NFT.
+Флиппера режем по скрытой коллекции и ресейлу, Premium сам по себе не режем.
 """
 
 from __future__ import annotations
@@ -16,7 +16,10 @@ from core.runtime import LiveFilters
 
 LOGGER = logging.getLogger("tg_gifts.filters")
 
-# Явный магазин/перекуп в био. «продам» само по себе не режем.
+_TRADER_NICK = re.compile(
+    r"(nft|нфт|gifts?|гифт|resale|ресейл|tonnel|portals?|mrkt|fragment|floor|flip|snipe)",
+    re.IGNORECASE,
+)
 _RESELLER_BIO = re.compile(
     r"("
     r"\bnft\b|нфт|"
@@ -147,6 +150,10 @@ def looks_like_reseller_bio(bio: str) -> bool:
     return bool(_RESELLER_BIO.search(bio or ""))
 
 
+def looks_like_trader_username(username: Optional[str]) -> bool:
+    return bool(_TRADER_NICK.search(username or ""))
+
+
 class ProfileFilter:
     def __init__(self, live: LiveFilters) -> None:
         self.live = live
@@ -242,9 +249,13 @@ class ProfileFilter:
         )
 
     def _noob_reasons(self, snapshot: ProfileSnapshot, live: LiveFilters) -> list[str]:
-        """Отсекает перекупов. Обычный человек с ур.1 и 1 NFT проходит."""
+        """Отсекает тех, кто шарит, даже если на витрине 1 дешёвый NFT."""
         metrics = snapshot.metrics
         found: list[str] = []
+        if metrics.personal_channel_id:
+            found.append("личный канал — витрина")
+        if looks_like_trader_username(metrics.username):
+            found.append("юзернейм как у перекупа")
         if looks_like_reseller_bio(metrics.bio):
             found.append("в био признаки перекупа")
         listed = {gift.slug for gift in snapshot.cheap_gifts if gift.slug}
@@ -259,10 +270,9 @@ class ProfileFilter:
         regular = len(snapshot.regular_gifts)
         if live.max_regular_gifts > 0 and regular > live.max_regular_gifts:
             found.append(f"обычных гифтов {regular} > {live.max_regular_gifts}")
-        visible = len(snapshot.unique_gifts) + regular
-        hidden = metrics.stargifts_count
-        if hidden is not None and hidden >= 10 and hidden > visible + 5:
-            found.append(f"скрытая коллекция: {hidden} гифтов при {visible} на витрине")
+        resale = [gift for gift in snapshot.unique_gifts if gift.on_resale]
+        if len(resale) >= 2:
+            found.append("несколько NFT на ресейле — флиппер")
         for gift in snapshot.unique_gifts:
             if gift.slug in listed:
                 continue

@@ -15,9 +15,9 @@ from config import Settings
 
 LOGGER = logging.getLogger("tg_gifts.runtime")
 DEFAULT_PATH = Path("data/filters.json")
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
-# Лох = ур.1 и 1–2 дешёвых NFT. Premium/канал не режем, иначе тишина.
+# Мамонт = ур.1, 1–2 NFT, 0–10 TON. Флипперов режем по витрине, не по Premium.
 ORIGINAL_FILTERS: dict[str, Any] = {
     "floor_min_ton": 0.0,
     "floor_max_ton": 10.0,
@@ -28,7 +28,7 @@ ORIGINAL_FILTERS: dict[str, Any] = {
     "require_stars_rating": True,
     "max_account_age_days": None,
     "min_activity_score": 0,
-    "max_activity_score": 0,
+    "max_activity_score": 55,
     "max_regular_gifts": 0,
     "require_premium": None,
     "require_noob_profile": True,
@@ -51,7 +51,7 @@ class LiveFilters:
     max_account_age_days: Optional[int] = None
     require_premium: Optional[bool] = None
     min_activity_score: int = 0
-    max_activity_score: int = 0
+    max_activity_score: int = 55
     max_regular_gifts: int = 0
     filter_seller_age: bool = False
     require_noob_profile: bool = True
@@ -73,9 +73,9 @@ class LiveFilters:
             stars_rating_max=1,
             require_stars_rating=True,
             max_account_age_days=None,
-            require_premium=settings.require_premium,
+            require_premium=None,
             min_activity_score=int(settings.min_activity_score),
-            max_activity_score=0,
+            max_activity_score=55,
             max_regular_gifts=0,
             require_noob_profile=True,
             filter_seller_age=False,
@@ -122,7 +122,7 @@ class LiveFilters:
                 setattr(self, key, value)
             self.schema_version = SCHEMA_VERSION
             self.save()
-            LOGGER.info("Фильтры: лох = рейтинг 1, ≤2 NFT, без витрины перекупа")
+            LOGGER.info("Фильтры: мамонт = рейтинг 1, ≤2 NFT, без скрытой витрины")
 
     def update(self, **kwargs: Any) -> None:
         for key, value in kwargs.items():

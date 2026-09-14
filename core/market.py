@@ -122,8 +122,9 @@ def profile_unique_gifts(
     listed: UniqueGift,
     *,
     gifts_fetched: bool,
+    stargifts_count: Optional[int] = None,
 ) -> list[UniqueGift]:
-    """NFT только с открытого профиля. Не угадываем, если подарки не прочитались."""
+    """NFT с открытого профиля. Пустую витрину не выдаём за 1 NFT, если гифтов явно больше."""
     if not gifts_fetched:
         return []
     if profile_uniques:
@@ -438,7 +439,7 @@ class GiftMarketScanner:
             if owner_id and metrics.stars_fetched and gifts_ok:
                 self._seller_cache[int(owner_id)] = (metrics, profile_uniques, regular)
         profile_uniques = profile_unique_gifts(
-            profile_uniques, unique, gifts_fetched=metrics.gifts_fetched
+            profile_uniques, unique, gifts_fetched=metrics.gifts_fetched, stargifts_count=metrics.stargifts_count
         )
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
@@ -600,11 +601,11 @@ class GiftMarketScanner:
             seller_name=user.username,
         )
         profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
-        profile_uniques = profile_unique_gifts(
-            profile_uniques, unique, gifts_fetched=gifts_ok
-        )
         metrics = await self._metrics_for_seller(user, user.id, user.username)
         metrics.gifts_fetched = gifts_ok
+        profile_uniques = profile_unique_gifts(
+            profile_uniques, unique, gifts_fetched=gifts_ok, stargifts_count=metrics.stargifts_count
+        )
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
             is_premium=metrics.is_premium,
@@ -767,7 +768,7 @@ class GiftMarketScanner:
         profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
         metrics.gifts_fetched = gifts_ok
         profile_uniques = profile_unique_gifts(
-            profile_uniques, unique, gifts_fetched=gifts_ok
+            profile_uniques, unique, gifts_fetched=gifts_ok, stargifts_count=metrics.stargifts_count
         )
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
@@ -852,7 +853,7 @@ class GiftMarketScanner:
         profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
         metrics.gifts_fetched = gifts_ok
         profile_uniques = profile_unique_gifts(
-            profile_uniques, unique, gifts_fetched=gifts_ok
+            profile_uniques, unique, gifts_fetched=gifts_ok, stargifts_count=metrics.stargifts_count
         )
         metrics.activity_score = compute_activity_score(
             username=metrics.username,
@@ -890,7 +891,7 @@ class GiftMarketScanner:
         if user is None or user.bot or getattr(user, "deleted", False):
             return [], [], False
         try:
-            uniques, regular = await self.scanner.fetch_saved_gifts(user, stop_after_unique=3)
+            uniques, regular = await self.scanner.fetch_saved_gifts(user, stop_after_unique=4)
         except Exception as exc:
             LOGGER.info("gifts профиля %s: %s", getattr(user, "id", "?"), exc)
             return [], [], False

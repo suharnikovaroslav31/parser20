@@ -520,15 +520,17 @@ class ProfileScanner:
         Все unique NFT профиля, включая скрытые с витрины.
 
         exclude_unsaved не ставим: иначе лох с спрятанной коллекцией выглядит как 1 NFT.
+        exclude_unlimited: обычные гифты не забивают страницы — иначе не видим уникальные.
         """
         unique: list[UniqueGift] = []
         regular: list[RegularGift] = []
         offset = ""
         pages = 0
-        max_pages = 4 if stop_after_unique is not None else 40
+        max_pages = 6 if stop_after_unique is not None else 12
         input_peer = await self._input_peer(user)
         supported = inspect.signature(GetSavedStarGiftsRequest).parameters
         include_hidden = "exclude_unsaved" in supported
+        unique_only = "exclude_unlimited" in supported
         while pages < max_pages:
             pages += 1
             kwargs: dict[str, Any] = {
@@ -538,6 +540,8 @@ class ProfileScanner:
             }
             if include_hidden:
                 kwargs["exclude_unsaved"] = False
+            if unique_only:
+                kwargs["exclude_unlimited"] = True
             try:
                 result = await self._flood.call(
                     lambda payload=dict(kwargs): self.client(GetSavedStarGiftsRequest(**payload)),

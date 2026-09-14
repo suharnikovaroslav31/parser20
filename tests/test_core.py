@@ -102,17 +102,25 @@ class FilterTests(unittest.TestCase):
             max_account_age_days=None,
             filter_seller_age=False,
             min_activity_score=0,
-            max_activity_score=0,
+            max_activity_score=55,
             max_regular_gifts=0,
             require_noob_profile=True,
         )
         self.flt = ProfileFilter(self.live)
 
     def test_match_rating1_two_nfts_young(self) -> None:
-        gifts = [_gift("A-1"), _gift("B-2", 3.0)]
+        extra = _gift("B-2", 3.0)
+        extra.on_resale = False
+        gifts = [_gift("A-1"), extra]
         snap = _snapshot(gifts=gifts, metrics=_metrics(), price=2.0)
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
+
+    def test_skip_two_resale_flipper(self) -> None:
+        gifts = [_gift("A-1"), _gift("B-2", 3.0)]
+        snap = _snapshot(gifts=gifts, metrics=_metrics(), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
 
     def test_skip_rating_missing(self) -> None:
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(stars_rating_level=None), price=2.0)
@@ -162,16 +170,20 @@ class FilterTests(unittest.TestCase):
         self.assertFalse(decision.matched)
         self.assertTrue(any("био" in reason for reason in decision.reasons))
 
-    def test_personal_channel_still_matches(self) -> None:
+    def test_skip_personal_channel(self) -> None:
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(personal_channel_id=123), price=2.0)
         decision = self.flt.evaluate(snap)
-        self.assertTrue(decision.matched, decision.reasons)
+        self.assertFalse(decision.matched)
 
-    def test_skip_hidden_collection(self) -> None:
-        snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=20), price=2.0)
+    def test_skip_trader_username(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(username="nftfloor"), price=2.0)
         decision = self.flt.evaluate(snap)
         self.assertFalse(decision.matched)
-        self.assertTrue(any("скрыт" in reason for reason in decision.reasons))
+
+    def test_stargifts_count_alone_still_matches(self) -> None:
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=20), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
 
     def test_few_extra_gifts_still_match(self) -> None:
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=4), price=2.0)
@@ -243,9 +255,9 @@ class FilterSchemaTests(unittest.TestCase):
             self.assertFalse(live.filter_seller_age)
             self.assertIsNone(live.max_account_age_days)
             self.assertEqual(live.floor_max_ton, 10.0)
-            self.assertGreaterEqual(live.schema_version, 7)
+            self.assertGreaterEqual(live.schema_version, 9)
             self.assertTrue(live.require_noob_profile)
-            self.assertEqual(live.max_activity_score, 0)
+            self.assertEqual(live.max_activity_score, 55)
             self.assertIsNone(live.require_premium)
 
 
