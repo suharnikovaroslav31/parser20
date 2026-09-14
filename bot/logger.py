@@ -26,6 +26,12 @@ _URL_OK = re.compile(r"^https://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%\-]+$")
 _SOURCE_NAME = {
     "tg_market": "Telegram",
     "telegram_resale": "Telegram",
+    "dialog": "диалог",
+    "recent_gift_peer": "гифт",
+    "live_gift_received": "гифт",
+    "live_gift_action": "гифт",
+    "seed_username": "seed",
+    "seed_id": "seed",
     "mrkt": "MRKT",
     "tonnel": "Tonnel",
     "portal": "Portals",

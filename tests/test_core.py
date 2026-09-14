@@ -314,6 +314,20 @@ class NanotonTests(unittest.TestCase):
         self.assertEqual(NANOTON, 1_000_000_000)
 
 
+class SearchDirectionTests(unittest.TestCase):
+    def test_telegram_skips_cheap_sorted_pages(self) -> None:
+        from core.market import CHEAP_PAGES, NEW_PAGES
+
+        self.assertEqual(CHEAP_PAGES, 0)
+        self.assertGreaterEqual(NEW_PAGES, 1)
+
+    def test_gift_action_prefers_recipient_peer(self) -> None:
+        from core.parser import ProfileScanner
+
+        action = SimpleNamespace(peer=SimpleNamespace(user_id=777), to_id=None)
+        self.assertEqual(ProfileScanner._action_recipient_id(action), 777)
+
+
 class SessionCleanTests(unittest.TestCase):
     def test_strips_quotes_and_whitespace(self) -> None:
         from config import _clean_session_string

@@ -1,11 +1,11 @@
 """
 Асинхронный сканер публичных профилей Telegram и коллекционных подарков.
 
-Источники кандидатов (только то, к чему у сессии уже есть доступ):
-1. SEED_USERNAMES / SEED_USER_IDS из конфига.
-2. Участники чатов из SEED_CHATS (клиент должен быть участником).
-3. Открытые диалоги аккаунта.
-4. Live-события: MessageActionStarGift / StarGiftUnique в доступных чатах.
+Источники кандидатов — люди вокруг сессии, не продавцы MRKT/Tonnel:
+1. Кому недавно прилетел гифт в чатах сессии (получатель, не гифтер).
+2. Открытые диалоги аккаунта.
+3. Live-события: MessageActionStarGift / StarGiftUnique.
+4. SEED_USERNAMES / SEED_USER_IDS / SEED_CHATS, если заданы.
 
 Читаются только подарки, которые пользователь выставил в профиле
 (`payments.getSavedStarGifts`). Приватные коллекции Telegram не отдаёт —
@@ -219,6 +219,7 @@ class ProfileScanner:
         self._limiter = AsyncRateLimiter(settings.telegram_concurrency, min_interval=0.35)
         self._flood = TelegramFloodControl(self._limiter)
         self._seen_ids: set[int] = set()
+        self._me_id: Optional[int] = None
         self._queue: asyncio.Queue[tuple[User, str]] = asyncio.Queue()
         raw = self.settings.telegram_session.strip()
         if raw:
@@ -275,7 +276,9 @@ class ProfileScanner:
                 "строку вставь в TELEGRAM_SESSION на хосте."
             )
         me = await asyncio.wait_for(self.client.get_me(), timeout=15)
+        self._me_id = int(me.id)
         LOGGER.info("MTProto клиент вошёл как %s id=%s", _user_display(me), me.id)
+        self._register_live_handlers()
 
     async def close(self) -> None:
         if self.client.is_connected():
@@ -311,12 +314,10 @@ class ProfileScanner:
         is_gift_action = gift_types and isinstance(action, gift_types)
         if not is_gift_action and "StarGift" not in type(action).__name__:
             return
-        sender = await event.get_sender()
-        if isinstance(sender, User) and not sender.bot and not sender.deleted:
-            await self._queue.put((sender, "live_gift_action"))
         peer_user = await event.get_chat()
-        if isinstance(peer_user, User) and not peer_user.bot and not peer_user.deleted:
-            await self._queue.put((peer_user, "live_gift_peer"))
+        recipient = await self._resolve_gift_recipient(action, peer_user)
+        if recipient is not None:
+            await self._enqueue_user(recipient, "live_gift_received", force=True)
 
     # ------------------------------------------------------------------
     # Источники кандидатов
@@ -325,15 +326,64 @@ class ProfileScanner:
         """Наполняет очередь seed-пользователями, чатами и диалогами."""
         enqueued = 0
         enqueued += await self._enqueue_seeds()
+        enqueued += await self._enqueue_recent_gift_recipients()
         enqueued += await self._enqueue_seed_chats()
         enqueued += await self._enqueue_dialogs()
         LOGGER.info("Очередь кандидатов: %s профилей", enqueued)
         return enqueued
 
-    async def _enqueue_user(self, user: User, source: str) -> bool:
+    async def drain_queue(self, *, limit: int = 80) -> AsyncIterator[ProfileSnapshot]:
+        """Снимает уже накопленных людей без ожидания live-событий."""
+        taken = 0
+        while taken < limit:
+            try:
+                user, source = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            taken += 1
+            snapshot = await self.build_snapshot(user, source)
+            if snapshot is not None:
+                yield snapshot
+
+    @staticmethod
+    def _action_recipient_id(action: Any) -> Optional[int]:
+        for name in ("peer", "to_id"):
+            obj = getattr(action, name, None)
+            if obj is None:
+                continue
+            if isinstance(obj, int) and obj > 0:
+                return int(obj)
+            uid = getattr(obj, "user_id", None)
+            if uid:
+                return int(uid)
+        return None
+
+    async def _resolve_gift_recipient(self, action: Any, chat: Any) -> Optional[User]:
+        recipient_id = self._action_recipient_id(action)
+        if self._me_id and recipient_id == self._me_id:
+            return None
+        if recipient_id:
+            if isinstance(chat, User) and chat.id == recipient_id:
+                return chat
+            try:
+                entity = await self._flood.call(
+                    lambda: self.client.get_entity(recipient_id),
+                    label=f"gift_peer:{recipient_id}",
+                )
+            except (RPCError, TypeError, ValueError):
+                entity = None
+            if isinstance(entity, User):
+                return entity
+        if isinstance(chat, User):
+            return chat
+        return None
+
+    async def _enqueue_user(self, user: User, source: str, *, force: bool = False) -> bool:
         if not isinstance(user, User) or user.bot or user.deleted or getattr(user, "min", False):
             return False
-        if user.id in self._seen_ids:
+        if self._me_id and user.id == self._me_id:
+            return False
+        if not force and user.id in self._seen_ids:
             return False
         self._seen_ids.add(user.id)
         await self._queue.put((user, source))
@@ -383,10 +433,31 @@ class ProfileScanner:
                 LOGGER.warning("iter_participants %s: %s — пропускаем чат", chat_ref, exc)
         return count
 
+    async def _enqueue_recent_gift_recipients(self) -> int:
+        """Люди, которым недавно прилетел гифт в чатах сессии — не продавцы маркета."""
+        count = 0
+        try:
+            async for dialog in self.client.iter_dialogs(limit=40):
+                entity = dialog.entity
+                try:
+                    async for message in self.client.iter_messages(entity, limit=18):
+                        action = getattr(message, "action", None)
+                        if action is None or "StarGift" not in type(action).__name__:
+                            continue
+                        recipient = await self._resolve_gift_recipient(action, entity)
+                        if recipient is not None and await self._enqueue_user(recipient, "recent_gift_peer"):
+                            count += 1
+                except (RPCError, TypeError, ValueError):
+                    continue
+        except RPCError as exc:
+            LOGGER.warning("недавние гифты: %s", exc)
+        LOGGER.info("Недавние гифты в чатах: %s людей", count)
+        return count
+
     async def _enqueue_dialogs(self) -> int:
         count = 0
         try:
-            async for dialog in self.client.iter_dialogs():
+            async for dialog in self.client.iter_dialogs(limit=120):
                 entity = dialog.entity
                 if isinstance(entity, User) and await self._enqueue_user(entity, "dialog"):
                     count += 1
@@ -652,7 +723,7 @@ class ProfileScanner:
         started = time.perf_counter()
         try:
             metrics = await self.fetch_metrics(user)
-            unique, regular = await self.fetch_saved_gifts(user)
+            unique, regular = await self.fetch_saved_gifts(user, stop_after_unique=4)
             metrics.gifts_fetched = True
             for gift in unique:
                 await self._enrich_telegram_floor(gift)
@@ -681,6 +752,8 @@ class ProfileScanner:
                 ton_usd=ton_usd,
                 processed_ms=elapsed_ms,
                 source=source,
+                fingerprint_key=f"user:{metrics.user_id}",
+                listing_key=f"user:{metrics.user_id}",
             )
         except (UserPrivacyRestrictedError, RPCError) as exc:
             LOGGER.debug("snapshot user=%s skip: %s", user.id, exc)

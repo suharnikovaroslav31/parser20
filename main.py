@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260914-2"
+BUILD = "20260914-4"
 
 
 def setup_logging() -> None:
@@ -101,7 +101,7 @@ class AnalyticsApp:
             LOGGER.warning("http start: %s", exc)
         await asyncio.wait_for(self.scanner.start(), timeout=25)
         LOGGER.info(
-            "Маркет + бот | рейтинг %s–%s | NFT %s–%s | лот %s–%s TON",
+            "Люди + Telegram NEW | рейтинг %s–%s | NFT %s–%s | лот %s–%s TON",
             self.live.stars_rating_min,
             self.live.stars_rating_max,
             self.live.min_unique_gifts,
@@ -215,7 +215,7 @@ class AnalyticsApp:
                 except asyncio.TimeoutError:
                     continue
                 continue
-            LOGGER.info("Старт прохода Telegram Gift Market + MRKT")
+            LOGGER.info("Старт прохода: люди сессии + Telegram NEW")
             self._pass_task = asyncio.create_task(self._one_pass(), name="market-pass")
             try:
                 await self._pass_task

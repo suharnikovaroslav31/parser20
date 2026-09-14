@@ -1,8 +1,8 @@
 """
-Сканер встроенного маркета Telegram Gifts.
+Источники кандидатов: люди вокруг сессии, затем свежие лоты Telegram.
 
-Полный обход ресейла: все коллекции, свежие лоты + все дешёвые в диапазоне цены.
-Продавцы берутся из result.users (без get_entity по ID).
+MRKT / Tonnel / Portals / Getgems и cheap-сортировка ресейла не обходятся —
+там продавцы уже ждут скам-ЛС. Продавцы TG NEW берутся из result.users.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
-CHEAP_PAGES = 4
-NEW_PAGES = 1
+CHEAP_PAGES = 0
+NEW_PAGES = 4
 EXTERNAL_LIMIT = 25
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
@@ -161,7 +161,7 @@ def listing_price_ton(
 
 
 class GiftMarketScanner:
-    """Основной источник данных: маркет Telegram + MRKT."""
+    """Люди из сессии, затем только свежие лоты встроенного Telegram-ресейла."""
 
     def __init__(self, scanner: ProfileScanner, market: TonMarketClient, settings: Settings, live) -> None:
         self.scanner = scanner
@@ -172,6 +172,7 @@ class GiftMarketScanner:
         self.tracker = ListingTracker()
         self._skipped_known = 0
         self._tg_priced = 0
+        self._people_bootstrapped = False
         self._seller_cache: dict[int, tuple[AccountMetrics, list[UniqueGift], list]] = {}
         self._username_cache: dict[str, Optional[User]] = {}
         self.stage = "idle"
@@ -232,35 +233,20 @@ class GiftMarketScanner:
             if not await self.scanner._flood.ensure_connected():
                 LOGGER.error("Telegram нет связи — этот проход пропускаю")
                 return
-            async for snapshot in self._iter_source("telegram-catalog", self._iter_telegram_resale()):
+            people_count = 0
+            async for snapshot in self._iter_source("people", self._iter_people()):
+                people_count += 1
+                yield snapshot
+            LOGGER.info("Люди вокруг сессии: снимков %s", people_count)
+            async for snapshot in self._iter_source("telegram-new", self._iter_telegram_resale()):
                 telegram_count += 1
                 yield snapshot
             LOGGER.info(
-                "Telegram: лотов в цене %s, снимков продавца %s, повторный пропуск %s",
+                "Telegram NEW: лотов в цене %s, снимков продавца %s, повторный пропуск %s",
                 self._tg_priced,
                 telegram_count,
                 self._skipped_known,
             )
-            mrkt_count = 0
-            async for snapshot in self._iter_source("mrkt", self._iter_mrkt_listings()):
-                mrkt_count += 1
-                yield snapshot
-            LOGGER.info("MRKT: снимков продавца %s", mrkt_count)
-            tonnel_count = 0
-            async for snapshot in self._iter_source("tonnel", self._iter_tonnel_listings()):
-                tonnel_count += 1
-                yield snapshot
-            LOGGER.info("Tonnel: снимков продавца %s", tonnel_count)
-            portal_count = 0
-            async for snapshot in self._iter_source("portal", self._iter_portal_listings()):
-                portal_count += 1
-                yield snapshot
-            LOGGER.info("Portals: снимков продавца %s", portal_count)
-            getgems_count = 0
-            async for snapshot in self._iter_source("getgems", self._iter_getgems_listings()):
-                getgems_count += 1
-                yield snapshot
-            LOGGER.info("Getgems: снимков продавца %s", getgems_count)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -271,6 +257,13 @@ class GiftMarketScanner:
             except Exception:
                 self.tracker.discard_partial()
             self.stage = "idle"
+
+    async def _iter_people(self) -> AsyncIterator[ProfileSnapshot]:
+        if not self._people_bootstrapped:
+            await self.scanner.bootstrap_queue()
+            self._people_bootstrapped = True
+        async for snapshot in self.scanner.drain_queue(limit=80):
+            yield snapshot
 
     async def _iter_telegram_resale(self) -> AsyncIterator[ProfileSnapshot]:
         if not self.scanner.client.is_connected():
@@ -329,8 +322,9 @@ class GiftMarketScanner:
     ) -> AsyncIterator[ProfileSnapshot]:
         async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=False, max_pages=NEW_PAGES):
             yield snapshot
-        async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=True, max_pages=CHEAP_PAGES):
-            yield snapshot
+        if CHEAP_PAGES:
+            async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=True, max_pages=CHEAP_PAGES):
+                yield snapshot
 
     async def _resale_pages(
         self,
