@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260916-3"
+BUILD = "20260916-4"
 
 
 def setup_logging() -> None:
@@ -106,7 +106,7 @@ class AnalyticsApp:
         except Exception as exc:
             LOGGER.warning("getMe бота: %s", exc)
         await self.logger_bot.probe()
-        LOGGER.info("Лог-группа %s | админ %s", self.logger_bot.log_group_id, settings.admin_id)
+        LOGGER.info("Лог-группа %s | админ %s", self.logger_bot.log_group_id, self.settings.admin_id)
         LOGGER.info(
             "Люди + Telegram NEW | рейтинг %s–%s | NFT %s–%s | лот %s–%s TON",
             self.live.stars_rating_min,
