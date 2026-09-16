@@ -315,10 +315,10 @@ class NanotonTests(unittest.TestCase):
 
 
 class SearchDirectionTests(unittest.TestCase):
-    def test_telegram_skips_cheap_sorted_pages(self) -> None:
+    def test_telegram_scans_cheap_then_new(self) -> None:
         from core.market import CHEAP_PAGES, NEW_PAGES
 
-        self.assertEqual(CHEAP_PAGES, 0)
+        self.assertGreaterEqual(CHEAP_PAGES, 1)
         self.assertGreaterEqual(NEW_PAGES, 1)
 
     def test_gift_action_prefers_recipient_peer(self) -> None:

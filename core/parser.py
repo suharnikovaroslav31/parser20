@@ -218,7 +218,7 @@ class ProfileScanner:
         self.market = market
         self._limiter = AsyncRateLimiter(settings.telegram_concurrency, min_interval=0.35)
         self._flood = TelegramFloodControl(self._limiter)
-        self._seen_ids: set[int] = set()
+        self._seen_at: dict[int, float] = {}
         self._me_id: Optional[int] = None
         self._queue: asyncio.Queue[tuple[User, str]] = asyncio.Queue()
         raw = self.settings.telegram_session.strip()
@@ -332,6 +332,10 @@ class ProfileScanner:
         LOGGER.info("Очередь кандидатов: %s профилей", enqueued)
         return enqueued
 
+    async def refresh_people_queue(self) -> int:
+        """Новые гифты и live-очередь между кругами, без повторного обхода всех диалогов."""
+        return await self._enqueue_recent_gift_recipients(dialogs=20, messages=12)
+
     async def drain_queue(self, *, limit: int = 80) -> AsyncIterator[ProfileSnapshot]:
         """Снимает уже накопленных людей без ожидания live-событий."""
         taken = 0
@@ -383,9 +387,14 @@ class ProfileScanner:
             return False
         if self._me_id and user.id == self._me_id:
             return False
-        if not force and user.id in self._seen_ids:
+        now = time.time()
+        marked = self._seen_at.get(user.id)
+        if not force and marked is not None and now - marked < 2 * 3600:
             return False
-        self._seen_ids.add(user.id)
+        self._seen_at[user.id] = now
+        if len(self._seen_at) > 20_000:
+            cutoff = now - 2 * 3600
+            self._seen_at = {uid: ts for uid, ts in self._seen_at.items() if ts >= cutoff}
         await self._queue.put((user, source))
         return True
 
@@ -433,14 +442,14 @@ class ProfileScanner:
                 LOGGER.warning("iter_participants %s: %s — пропускаем чат", chat_ref, exc)
         return count
 
-    async def _enqueue_recent_gift_recipients(self) -> int:
+    async def _enqueue_recent_gift_recipients(self, *, dialogs: int = 40, messages: int = 18) -> int:
         """Люди, которым недавно прилетел гифт в чатах сессии — не продавцы маркета."""
         count = 0
         try:
-            async for dialog in self.client.iter_dialogs(limit=40):
+            async for dialog in self.client.iter_dialogs(limit=dialogs):
                 entity = dialog.entity
                 try:
-                    async for message in self.client.iter_messages(entity, limit=18):
+                    async for message in self.client.iter_messages(entity, limit=messages):
                         action = getattr(message, "action", None)
                         if action is None or "StarGift" not in type(action).__name__:
                             continue

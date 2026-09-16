@@ -1,8 +1,8 @@
 """
-Источники кандидатов: люди вокруг сессии, затем свежие лоты Telegram.
+Источники кандидатов: люди вокруг сессии, затем дешёвые и свежие лоты Telegram.
 
-MRKT / Tonnel / Portals / Getgems и cheap-сортировка ресейла не обходятся —
-там продавцы уже ждут скам-ЛС. Продавцы TG NEW берутся из result.users.
+MRKT / Tonnel / Portals / Getgems не обходятся — там уже ждут скам-ЛС.
+Продавцы TG берутся из result.users.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
-CHEAP_PAGES = 0
-NEW_PAGES = 4
+CHEAP_PAGES = 3
+NEW_PAGES = 2
 EXTERNAL_LIMIT = 25
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
@@ -238,11 +238,11 @@ class GiftMarketScanner:
                 people_count += 1
                 yield snapshot
             LOGGER.info("Люди вокруг сессии: снимков %s", people_count)
-            async for snapshot in self._iter_source("telegram-new", self._iter_telegram_resale()):
+            async for snapshot in self._iter_source("telegram-resale", self._iter_telegram_resale()):
                 telegram_count += 1
                 yield snapshot
             LOGGER.info(
-                "Telegram NEW: лотов в цене %s, снимков продавца %s, повторный пропуск %s",
+                "Telegram cheap+NEW: лотов в цене %s, снимков продавца %s, повторный пропуск %s",
                 self._tg_priced,
                 telegram_count,
                 self._skipped_known,
@@ -262,6 +262,8 @@ class GiftMarketScanner:
         if not self._people_bootstrapped:
             await self.scanner.bootstrap_queue()
             self._people_bootstrapped = True
+        else:
+            await self.scanner.refresh_people_queue()
         async for snapshot in self.scanner.drain_queue(limit=80):
             yield snapshot
 
@@ -320,11 +322,11 @@ class GiftMarketScanner:
         title: str,
         ton_usd: float,
     ) -> AsyncIterator[ProfileSnapshot]:
-        async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=False, max_pages=NEW_PAGES):
-            yield snapshot
         if CHEAP_PAGES:
             async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=True, max_pages=CHEAP_PAGES):
                 yield snapshot
+        async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=False, max_pages=NEW_PAGES):
+            yield snapshot
 
     async def _resale_pages(
         self,
