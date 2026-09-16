@@ -17,7 +17,7 @@ from core.runtime import LiveFilters
 LOGGER = logging.getLogger("tg_gifts.filters")
 
 _TRADER_NICK = re.compile(
-    r"(nft|нфт|gifts?|гифт|resale|ресейл|tonnel|portals?|mrkt|fragment|floor|flip|snipe)",
+    r"(nft|нфт|gifts?|гифт|resale|ресейл|tonnel|portals?|mrkt|fragment|floor|flip|snipe|getgems|collect)",
     re.IGNORECASE,
 )
 _RESELLER_BIO = re.compile(
@@ -258,12 +258,10 @@ class ProfileFilter:
             found.append("юзернейм как у перекупа")
         if looks_like_reseller_bio(metrics.bio):
             found.append("в био признаки перекупа")
-        listed = {gift.slug for gift in snapshot.cheap_gifts if gift.slug}
-        hidden_nfts = [
-            gift for gift in snapshot.unique_gifts if gift.unsaved and gift.slug not in listed
-        ]
+        hidden_nfts = [gift for gift in snapshot.unique_gifts if gift.unsaved]
         if hidden_nfts:
             found.append(f"скрытые NFT: {len(hidden_nfts)}")
+        listed = {gift.slug for gift in snapshot.cheap_gifts if gift.slug}
         richness = profile_richness(metrics)
         if live.max_activity_score > 0 and richness > live.max_activity_score:
             found.append(f"профиль слишком живой {richness} > {live.max_activity_score}")

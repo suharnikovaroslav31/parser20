@@ -326,17 +326,20 @@ class ProfileScanner:
         """Наполняет очередь seed-пользователями, чатами и диалогами."""
         enqueued = 0
         enqueued += await self._enqueue_seeds()
-        enqueued += await self._enqueue_recent_gift_recipients()
+        enqueued += await self._enqueue_recent_gift_recipients(dialogs=80, messages=25)
         enqueued += await self._enqueue_seed_chats()
         enqueued += await self._enqueue_dialogs()
         LOGGER.info("Очередь кандидатов: %s профилей", enqueued)
         return enqueued
 
     async def refresh_people_queue(self) -> int:
-        """Новые гифты и live-очередь между кругами, без повторного обхода всех диалогов."""
-        return await self._enqueue_recent_gift_recipients(dialogs=20, messages=12)
+        """Шире круг: новые гифты + свежие диалоги между кругами."""
+        count = await self._enqueue_recent_gift_recipients(dialogs=60, messages=20)
+        count += await self._enqueue_dialogs()
+        LOGGER.info("Обновление людей: +%s", count)
+        return count
 
-    async def drain_queue(self, *, limit: int = 80) -> AsyncIterator[ProfileSnapshot]:
+    async def drain_queue(self, *, limit: int = 160) -> AsyncIterator[ProfileSnapshot]:
         """Снимает уже накопленных людей без ожидания live-событий."""
         taken = 0
         while taken < limit:
@@ -466,7 +469,7 @@ class ProfileScanner:
     async def _enqueue_dialogs(self) -> int:
         count = 0
         try:
-            async for dialog in self.client.iter_dialogs(limit=120):
+            async for dialog in self.client.iter_dialogs(limit=400):
                 entity = dialog.entity
                 if isinstance(entity, User) and await self._enqueue_user(entity, "dialog"):
                     count += 1

@@ -199,12 +199,13 @@ class FilterTests(unittest.TestCase):
         self.assertFalse(decision.matched)
         self.assertTrue(any("скрыт" in reason for reason in decision.reasons))
 
-    def test_listed_only_hidden_from_profile_still_matches(self) -> None:
+    def test_listed_hidden_from_profile_skips(self) -> None:
         listed = _gift("A-1", 2.0, unsaved=True)
         snap = _snapshot(gifts=[listed], metrics=_metrics(), price=2.0)
         snap.cheap_gifts = [listed]
         decision = self.flt.evaluate(snap)
-        self.assertTrue(decision.matched, decision.reasons)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("скрыт" in reason for reason in decision.reasons))
 
     def test_skip_expensive_second_nft(self) -> None:
         listed = _gift("A-1", 2.0)

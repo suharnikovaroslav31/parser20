@@ -106,17 +106,56 @@ def format_lot_dm(lot: ClaimLot) -> str:
     )
 
 
-async def _delete_group_post(call: CallbackQuery) -> None:
+def _claimer_label(user) -> str:
+    name = (getattr(user, "full_name", None) or "").strip() or "кто-то"
+    username = getattr(user, "username", None)
+    if username:
+        return f"{name} (@{username})"
+    return f"{name} · id {user.id}"
+
+
+def claimed_keyboard(nft_link: str) -> Optional[InlineKeyboardMarkup]:
+    url = _http_url(nft_link)
+    if not url:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Открыть NFT", url=url, **kb_icon("link"))]]
+    )
+
+
+async def _mark_group_claimed(call: CallbackQuery, lot: ClaimLot, claimed_by) -> None:
+    """Карточка остаётся в группе с пометкой, кто занял — не удаляем."""
+    message = call.message
+    if not isinstance(message, Message):
+        return
+    who = _esc(_claimer_label(claimed_by))
+    stamp = f"{e('check')} <b>Занял</b> {who}"
+    original = (getattr(message, "html_text", None) or message.text or "").strip()
+    if original and "Занял" not in original and "Лот занят" not in original:
+        text = f"{stamp}\n\n{original}"
+    elif original:
+        text = original
+    else:
+        num = f" #{lot.number}" if lot.number is not None else ""
+        text = f"{stamp}\n{e('gift')} <b>{_esc(lot.title)}{num}</b>"
+    markup = claimed_keyboard(lot.nft_link)
+    try:
+        await message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
+        return
+    except TelegramBadRequest as exc:
+        LOGGER.warning("не обновил карточку (%s)", exc)
+    try:
+        await message.reply(stamp, disable_web_page_preview=True)
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        LOGGER.warning("не написал что лот занят: %s", exc)
+
+
+async def _mark_already_taken(call: CallbackQuery) -> None:
     message = call.message
     if not isinstance(message, Message):
         return
     try:
-        await message.delete()
-        return
-    except (TelegramBadRequest, TelegramForbiddenError) as exc:
-        LOGGER.warning("Не удалил пост в группе: %s", exc)
-    try:
-        await message.edit_text("Лот занят", reply_markup=None)
+        await message.edit_reply_markup(reply_markup=None)
     except (TelegramBadRequest, TelegramForbiddenError):
         pass
 
@@ -130,6 +169,7 @@ def setup_claims(store: ClaimStore) -> Router:
         lot = store.take(token)
         if lot is None:
             await call.answer("Лот уже занят или устарел", show_alert=True)
+            await _mark_already_taken(call)
             return
         user = call.from_user
         if user is None:
@@ -169,6 +209,6 @@ def setup_claims(store: ClaimStore) -> Router:
                 await call.answer("Напишите боту /start в личке и повторите", show_alert=True)
                 return
         await call.answer("Лот отправлен вам в личку")
-        await _delete_group_post(call)
+        await _mark_group_claimed(call, lot, user)
 
     return router
