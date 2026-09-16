@@ -336,5 +336,19 @@ class SessionCleanTests(unittest.TestCase):
         self.assertEqual(_clean_session_string("none"), "")
 
 
+class ChatIdTests(unittest.TestCase):
+    def test_adds_supergroup_prefix(self) -> None:
+        from config import normalize_telegram_chat_id
+
+        self.assertEqual(normalize_telegram_chat_id(-5425946278), -1005425946278)
+        self.assertEqual(normalize_telegram_chat_id(-1005425946278), -1005425946278)
+
+    def test_tries_both_group_id_formats(self) -> None:
+        from config import log_group_id_candidates
+
+        self.assertEqual(log_group_id_candidates(-5425946278), [-5425946278, -1005425946278])
+        self.assertEqual(log_group_id_candidates(-1005425946278), [-1005425946278, -5425946278])
+
+
 if __name__ == "__main__":
     unittest.main()

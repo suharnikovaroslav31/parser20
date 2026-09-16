@@ -24,6 +24,33 @@ def _split_csv(value: str | list[str] | None) -> list[str]:
     return [chunk.strip() for chunk in str(value).split(",") if chunk.strip()]
 
 
+def log_group_id_candidates(chat_id: int) -> list[int]:
+    """Оба формата: -5425946278 и -1005425946278."""
+    primary = int(chat_id)
+    ids = [primary]
+    text = str(primary)
+    if text.startswith("-100") and len(text) > 4:
+        alt = int(f"-{text[4:]}")
+    elif primary < 0 and abs(primary) >= 1_000_000_000:
+        alt = -int(f"100{abs(primary)}")
+    else:
+        return ids
+    if alt != primary:
+        ids.append(alt)
+    return ids
+
+
+def normalize_telegram_chat_id(value: object) -> int:
+    """Супергруппа в Bot API: -100… ID-боты часто отдают -5425946278 без префикса."""
+    chat_id = int(str(value).strip())
+    text = str(chat_id)
+    if text.startswith("-100"):
+        return chat_id
+    if chat_id < 0 and abs(chat_id) >= 1_000_000_000:
+        return -int(f"100{abs(chat_id)}")
+    return chat_id
+
+
 def _clean_session_string(value: object) -> str:
     text = "" if value is None else str(value)
     text = text.strip().strip('"').strip("'")
@@ -165,6 +192,11 @@ class Settings(BaseSettings):
     @classmethod
     def _clean_session(cls, value: object) -> str:
         return _clean_session_string(value)
+
+    @field_validator("log_group_id", mode="before")
+    @classmethod
+    def _supergroup_chat_id(cls, value: object) -> int:
+        return normalize_telegram_chat_id(value)
 
     @field_validator("seed_usernames", "seed_chats", mode="before")
     @classmethod

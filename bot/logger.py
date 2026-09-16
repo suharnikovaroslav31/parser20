@@ -16,6 +16,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRet
 
 from bot.claims import ClaimLot, ClaimStore, lot_keyboard, new_token
 from bot.emoji import disable, e, strip
+from config import log_group_id_candidates
 from core.models import FilterDecision, UniqueGift
 from core.runtime import LiveFilters
 
@@ -181,10 +182,18 @@ class GiftLogger:
                 continue
             except TelegramBadRequest as exc:
                 last_error = exc
+                text_l = str(exc).lower()
+                if "chat not found" in text_l:
+                    if await self._try_other_chat():
+                        continue
+                    LOGGER.error(
+                        "бот не видит лог-группу %s. Добавь ЭТОГО бота в НОВУЮ группу и проверь LOG_GROUP_ID на хосте",
+                        self.log_group_id,
+                    )
+                    return False
                 LOGGER.warning("карточка отклонена (%s), упрощает", exc)
                 disable()
                 html_text = strip(html_text)
-                text_l = str(exc).lower()
                 use_html = "too long" not in text_l and "message is too long" not in text_l
                 try:
                     await self._deliver(html_text if use_html else plain, lot_keyboard(token, nft, chat), html=use_html)
@@ -214,6 +223,39 @@ class GiftLogger:
                 continue
         LOGGER.error("карточка не ушла после ретраев: %s", last_error)
         return False
+
+    async def _try_other_chat(self) -> bool:
+        for chat_id in log_group_id_candidates(self.log_group_id):
+            if chat_id == self.log_group_id:
+                continue
+            try:
+                await asyncio.wait_for(self.bot.get_chat(chat_id), timeout=8)
+            except Exception:
+                LOGGER.warning("группа %s тоже не видна", chat_id)
+                continue
+            LOGGER.warning("лог-группа %s не найдена — пишу в %s", self.log_group_id, chat_id)
+            self.log_group_id = chat_id
+            return True
+        return False
+
+    async def probe(self) -> None:
+        last = None
+        for chat_id in log_group_id_candidates(self.log_group_id):
+            try:
+                chat = await asyncio.wait_for(self.bot.get_chat(chat_id), timeout=8)
+            except Exception as exc:
+                last = exc
+                LOGGER.warning("проверка группы %s: %s", chat_id, exc)
+                continue
+            title = getattr(chat, "title", None) or getattr(chat, "username", "") or chat_id
+            self.log_group_id = chat_id
+            LOGGER.info("лог-группа ок: %s (%s)", chat_id, title)
+            return
+        LOGGER.error(
+            "лог-группа недоступна (%s). Добавь бота парсера в новую группу, LOG_GROUP_ID=%s",
+            last,
+            self.log_group_id,
+        )
 
     async def _deliver(self, text: str, markup, *, html: bool) -> None:
         await asyncio.wait_for(
