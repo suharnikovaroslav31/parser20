@@ -15,18 +15,28 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.emoji import e, kb_icon
+from config import get_settings
 from core.runtime import LiveFilters
 
 LOGGER = logging.getLogger("tg_gifts.admin")
-ADMIN_ID = 8927983640
-
 router = Router(name="admin")
+
+
+def _admin_id() -> int:
+    try:
+        return int(get_settings().admin_id)
+    except Exception:
+        return 8129409474
+
+
+def _community(live: LiveFilters) -> str:
+    return (live.community_url or "https://t.me/GGsel_deal").strip()
 
 
 class IsAdmin(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
         user = event.from_user
-        return user is not None and user.id == ADMIN_ID
+        return user is not None and user.id == _admin_id()
 
 
 class EditFilter(StatesGroup):
@@ -90,7 +100,7 @@ def _menu_text(live: LiveFilters) -> str:
         f"{e('gear')} <b>Админ-панель TG-Gifts</b>\n"
         f"{e('spark')} Настройки видны только вам.\n\n"
         f"{lines}\n\n"
-        f"{e('chat')} Чат: <a href=\"https://t.me/BYRMALDAEVO\">BYRMALDAEVO</a>\n"
+        f"{e('chat')} Гарант: <a href=\"{_community(live)}\">GGsel_deal</a>\n"
         f"{e('warn')} Лох = ур.1, ≤2 NFT до 10 TON, без скрытых NFT. Режем перекупов (био-магазин, спрятанная коллекция, дорогой второй NFT). Premium и канал — ок.\n"
         f"Нажмите кнопку, чтобы сменить значение."
     )
@@ -126,7 +136,7 @@ async def _send_menu(target: Message, live: LiveFilters, *, edit: bool = False) 
         if "not modified" in str(exc).lower():
             return
         LOGGER.warning("HTML меню отклонено (%s), шлём plain", exc)
-    plain = "Админ-панель TG-Gifts\n" + "\n".join(live.summary_lines()) + "\nhttps://t.me/BYRMALDAEVO"
+    plain = "Админ-панель TG-Gifts\n" + "\n".join(live.summary_lines()) + f"\n{_community(live)}"
     if edit:
         await target.edit_text(plain, reply_markup=kb, parse_mode=None, disable_web_page_preview=True)
     else:
@@ -146,7 +156,7 @@ def setup_admin(live: LiveFilters) -> Router:
         await message.answer(
             f"{e('check')} Бот запущен.\n"
             f"Теперь в группе можно нажать «Занять лот» — карточка придёт сюда в личку.\n"
-            f"{e('chat')} Чат: <a href=\"https://t.me/BYRMALDAEVO\">t.me/BYRMALDAEVO</a>",
+            f"{e('chat')} Гарант: <a href=\"https://t.me/GGsel_deal\">t.me/GGsel_deal</a>",
             disable_web_page_preview=True,
         )
 

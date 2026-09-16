@@ -20,7 +20,7 @@ from core.models import FilterDecision, UniqueGift
 from core.runtime import LiveFilters
 
 LOGGER = logging.getLogger("tg_gifts.logger")
-COMMUNITY = "https://t.me/BYRMALDAEVO"
+COMMUNITY = "https://t.me/GGsel_deal"
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\ufeff]")
 _URL_OK = re.compile(r"^https://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%\-]+$")
 _SOURCE_NAME = {
@@ -133,7 +133,7 @@ class GiftLogger:
             f"<code>{len(snapshot.unique_gifts)}</code> / макс <code>{self.live.max_unique_gifts}</code>\n"
             f"{e('chart')} <b>Регистрация</b> {_esc(_age_label(metrics.approx_registered_at, metrics.account_age_days))}\n"
             f"{e('money')} <b>Лот</b>\n{cheap_block}{extra}\n"
-            f"{e('link')} {_http_link(getgems, 'Getgems')} · {e('chat')} {_http_link(community, 'чат BYRMALDAEVO')}\n"
+            f"{e('link')} {_http_link(getgems, 'Getgems')} · {e('chat')} {_http_link(community, 'гарант')}\n"
             f"{e('bell')} <code>{now}</code>\n"
             f"<i>{_esc('; '.join(decision.reasons))}</i>"
         )
@@ -166,9 +166,10 @@ class GiftLogger:
         nft = decision.snapshot.cheap_gifts[0].nft_link if decision.snapshot.cheap_gifts else ""
         html_text = self.render(decision)
         plain = _plain(decision, self.live)
+        chat = self.live.community_url or COMMUNITY
         last_error = None
         for attempt in range(8):
-            markup = lot_keyboard(token, nft)
+            markup = lot_keyboard(token, nft, chat)
             try:
                 await self._deliver(html_text, markup, html=True)
                 return True
@@ -186,7 +187,7 @@ class GiftLogger:
                 text_l = str(exc).lower()
                 use_html = "too long" not in text_l and "message is too long" not in text_l
                 try:
-                    await self._deliver(html_text if use_html else plain, lot_keyboard(token, nft), html=use_html)
+                    await self._deliver(html_text if use_html else plain, lot_keyboard(token, nft, chat), html=use_html)
                     return True
                 except TelegramRetryAfter as exc2:
                     wait = min(int(getattr(exc2, "retry_after", 5) or 5) + 1, 20)
@@ -195,7 +196,7 @@ class GiftLogger:
                     continue
                 except TelegramAPIError:
                     try:
-                        await self._deliver(plain, lot_keyboard(token, nft), html=False)
+                        await self._deliver(plain, lot_keyboard(token, nft, chat), html=False)
                         return True
                     except TelegramRetryAfter as exc3:
                         await asyncio.sleep(min(int(getattr(exc3, "retry_after", 5) or 5) + 1, 20))

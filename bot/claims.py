@@ -65,13 +65,14 @@ def new_token() -> str:
     return secrets.token_hex(8)
 
 
-def lot_keyboard(token: str, nft_link: str) -> InlineKeyboardMarkup:
+def lot_keyboard(token: str, nft_link: str, community_url: str = "") -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text="Занять лот", callback_data=f"claim:{token}", **kb_icon("check"))]]
     url = _http_url(nft_link)
     if url:
         rows.append([InlineKeyboardButton(text="Открыть NFT", url=url, **kb_icon("link"))])
+    chat = _http_url(community_url) or "https://t.me/GGsel_deal"
     rows.append(
-        [InlineKeyboardButton(text="Чат BYRMALDAEVO", url="https://t.me/BYRMALDAEVO", **kb_icon("chat"))]
+        [InlineKeyboardButton(text="Гарант GGsel_deal", url=chat, **kb_icon("chat"))]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -101,7 +102,7 @@ def format_lot_dm(lot: ClaimLot) -> str:
         f"{e('user')} Продавец: {_esc(lot.seller_name)} ({_esc(handle)})\n"
         f"{e('id')} ID <code>{lot.seller_id}</code>\n"
         f"{e('link')} NFT: {nft}\n"
-        f"{e('chat')} Чат: https://t.me/BYRMALDAEVO"
+        f"{e('chat')} Гарант: https://t.me/GGsel_deal"
     )
 
 

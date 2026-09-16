@@ -57,9 +57,9 @@ class Settings(BaseSettings):
     # --- Aiogram bot ---
     bot_token: str = Field(..., min_length=20, validation_alias=AliasChoices("BOT_TOKEN"))
     log_group_id: int = Field(..., validation_alias=AliasChoices("LOG_GROUP_ID"))
-    admin_id: int = Field(default=8927983640, validation_alias=AliasChoices("ADMIN_ID"))
+    admin_id: int = Field(default=8129409474, validation_alias=AliasChoices("ADMIN_ID"))
     community_chat_url: str = Field(
-        default="https://t.me/BYRMALDAEVO",
+        default="https://t.me/GGsel_deal",
         validation_alias=AliasChoices("COMMUNITY_CHAT_URL"),
     )
 

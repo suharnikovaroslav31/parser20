@@ -57,7 +57,7 @@ class LiveFilters:
     require_noob_profile: bool = True
     alert_cooldown_hours: int = 24
     market_poll_sec: int = 45
-    community_url: str = "https://t.me/BYRMALDAEVO"
+    community_url: str = "https://t.me/GGsel_deal"
     schema_version: int = SCHEMA_VERSION
     path: Path = field(default_factory=lambda: DEFAULT_PATH, repr=False)
 
@@ -81,14 +81,14 @@ class LiveFilters:
             filter_seller_age=False,
             alert_cooldown_hours=int(settings.alert_cooldown_hours),
             market_poll_sec=int(settings.market_poll_sec),
-            community_url=getattr(settings, "community_chat_url", None) or "https://t.me/BYRMALDAEVO",
+            community_url=getattr(settings, "community_chat_url", None) or "https://t.me/GGsel_deal",
             schema_version=SCHEMA_VERSION,
             path=path,
         )
         if path.exists():
             live.load()
-        else:
-            live.save()
+        live.community_url = getattr(settings, "community_chat_url", None) or "https://t.me/GGsel_deal"
+        live.save()
         return live
 
     @property
