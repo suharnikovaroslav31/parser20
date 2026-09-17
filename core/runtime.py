@@ -16,6 +16,7 @@ from config import Settings
 LOGGER = logging.getLogger("tg_gifts.runtime")
 DEFAULT_PATH = Path("data/filters.json")
 SCHEMA_VERSION = 10
+BUILD = "20260917-9"
 
 # Мамонт = русский, ур.1, 1–2 NFT, 0–10 TON.
 ORIGINAL_FILTERS: dict[str, Any] = {
@@ -140,6 +141,7 @@ class LiveFilters:
         premium = {True: "только Premium", False: "без Premium", None: "любой"}[self.require_premium]
         age = "выкл" if not self.filter_seller_age or not self.max_account_age_days else f"≤ {self.max_account_age_days}д"
         return [
+            f"Сборка: {BUILD}",
             f"Сканер: {'ON' if self.scanner_enabled else 'OFF'}",
             f"Цена лота: {self.floor_min_ton:g}–{self.floor_max_ton:g} TON",
             f"NFT в профиле: {self.min_unique_gifts}–{self.max_unique_gifts}",

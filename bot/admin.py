@@ -16,7 +16,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.emoji import e, kb_icon
 from config import get_settings
-from core.runtime import LiveFilters
+from core.runtime import BUILD, LiveFilters
 
 LOGGER = logging.getLogger("tg_gifts.admin")
 router = Router(name="admin")
@@ -99,7 +99,7 @@ def _menu_text(live: LiveFilters) -> str:
     lines = "\n".join(f"{e('list')} {row}" for row in live.summary_lines())
     return (
         f"{e('gear')} <b>Админ-панель TG-Gifts</b>\n"
-        f"{e('spark')} Настройки видны только вам.\n\n"
+        f"{e('spark')} Сборка <code>{BUILD}</code>. Настройки видны только вам.\n\n"
         f"{lines}\n\n"
         f"{e('chat')} Гарант: <a href=\"{_community(live)}\">GGsel_deal</a>\n"
         f"{e('warn')} Лох = ур.1, 1–2 NFT до 10 TON, NFT только открытые на витрине. Скрыл коллекцию / перекуп / флиппер — skip.\n"
@@ -165,6 +165,10 @@ def setup_admin(live: LiveFilters) -> Router:
     async def cmd_admin(message: Message, state: FSMContext) -> None:
         await state.clear()
         await _send_menu(message, live)
+
+    @router.message(Command("build"), IsAdmin())
+    async def cmd_build(message: Message) -> None:
+        await message.answer(f"сборка <code>{BUILD}</code>")
 
     @router.message(Command("admin"))
     async def cmd_admin_denied(message: Message) -> None:

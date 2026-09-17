@@ -508,5 +508,13 @@ class ChatIdTests(unittest.TestCase):
         self.assertEqual(log_group_id_candidates(-1005425946278), [-1005425946278, -5425946278])
 
 
+class BuildTests(unittest.TestCase):
+    def test_build_id(self) -> None:
+        from core.runtime import BUILD
+
+        self.assertTrue(BUILD.startswith("20260917-"))
+        self.assertGreaterEqual(BUILD, "20260917-9")
+
+
 if __name__ == "__main__":
     unittest.main()

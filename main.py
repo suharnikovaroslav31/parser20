@@ -20,12 +20,11 @@ from bot.logger import GiftLogger
 from core.filters import ProfileFilter
 from core.market import GiftMarketScanner
 from core.parser import ProfileScanner
-from core.runtime import LiveFilters
+from core.runtime import BUILD, LiveFilters
 from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260917-8"
 
 
 def setup_logging() -> None:
@@ -108,7 +107,8 @@ class AnalyticsApp:
         except Exception as exc:
             LOGGER.warning("getMe бота: %s", exc)
         await self.logger_bot.probe()
-        LOGGER.info("Лог-группа %s | админ %s", self.logger_bot.log_group_id, settings.admin_id)
+        await self.logger_bot.announce_build(BUILD, settings.admin_id)
+        LOGGER.info("Лог-группа %s | админ %s | сборка %s", self.logger_bot.log_group_id, settings.admin_id, BUILD)
         LOGGER.info(
             "Люди + Telegram cheap/NEW | рейтинг %s–%s | NFT %s–%s | лот %s–%s TON",
             self.live.stars_rating_min,
@@ -274,7 +274,8 @@ class AnalyticsApp:
                 except Exception:
                     pass
                 LOGGER.info(
-                    "жив | stage=%s seen=%s matched=%s tg=%s pass=%s | %s",
+                    "жив | сборка %s | stage=%s seen=%s matched=%s tg=%s pass=%s | %s",
+                    BUILD,
                     self.markets.stage,
                     self._seen,
                     self._matched,

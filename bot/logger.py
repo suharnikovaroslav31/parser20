@@ -18,7 +18,7 @@ from bot.claims import ClaimLot, ClaimStore, lot_keyboard, new_token
 from bot.emoji import disable, e, strip
 from config import log_group_id_candidates
 from core.models import FilterDecision, UniqueGift
-from core.runtime import LiveFilters
+from core.runtime import BUILD, LiveFilters
 
 LOGGER = logging.getLogger("tg_gifts.logger")
 COMMUNITY = "https://t.me/GGsel_deal"
@@ -96,7 +96,8 @@ def _plain(decision: FilterDecision, live: LiveFilters) -> str:
         f"Рейтинг ур.{m.stars_rating_level} | NFT {len(snap.unique_gifts)}\n"
         f"{title}\n"
         f"{gift.nft_link if gift else ''}\n"
-        f"{live.community_url or COMMUNITY}"
+        f"{live.community_url or COMMUNITY}\n"
+        f"сборка {BUILD}"
     )
 
 
@@ -136,7 +137,7 @@ class GiftLogger:
             f"{e('chart')} <b>Регистрация</b> {_esc(_age_label(metrics.approx_registered_at, metrics.account_age_days))}\n"
             f"{e('money')} <b>Лот</b>\n{cheap_block}{extra}\n"
             f"{e('link')} {_http_link(getgems, 'Getgems')} · {e('chat')} {_http_link(community, 'гарант')}\n"
-            f"{e('bell')} <code>{now}</code>\n"
+            f"{e('bell')} <code>{now}</code> · сборка <code>{_esc(BUILD)}</code>\n"
             f"<i>{_esc('; '.join(decision.reasons))}</i>"
         )
 
@@ -257,6 +258,36 @@ class GiftLogger:
             last,
             self.log_group_id,
         )
+
+    async def announce_build(self, build: str, admin_id: int) -> None:
+        text = (
+            f"{e('lightning')} <b>сборка</b> <code>{_esc(build)}</code> запущена\n"
+            f"короткие круги NEW, лохи не с пола рынка\n"
+            f"если этого сообщения не было — хост не подтянул git, нужен Rebuild без кэша"
+        )
+        sent = 0
+        seen: set[int] = set()
+        for chat_id in (self.log_group_id, admin_id):
+            if not chat_id or int(chat_id) in seen:
+                continue
+            seen.add(int(chat_id))
+            try:
+                await asyncio.wait_for(
+                    self.bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        disable_web_page_preview=True,
+                        parse_mode=ParseMode.HTML,
+                    ),
+                    timeout=12,
+                )
+                sent += 1
+            except Exception as exc:
+                LOGGER.warning("пинг сборки chat=%s: %s", chat_id, exc)
+        if sent:
+            LOGGER.info("пинг сборки %s ушёл в %s чат(ов)", build, sent)
+        else:
+            LOGGER.error("пинг сборки %s никуда не ушёл — группа/админ не видят бота", build)
 
     async def _deliver(self, text: str, markup, *, html: bool) -> None:
         await asyncio.wait_for(
