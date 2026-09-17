@@ -31,6 +31,14 @@ _COMMON_LATIN = {
     "leo", "artem", "kirill", "andrey", "sergey", "dmitry", "alexander",
 }
 _CYRILLIC = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]")
+_FOREIGN_SCRIPT = re.compile(
+    r"[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff\uac00-\ud7af\u0600-\u06ff\u0e00-\u0e7f\u0900-\u097f]"
+)
+_FOREIGN_LANG = {
+    "en", "zh", "ar", "tr", "es", "pt", "de", "fr", "id", "hi", "th", "vi",
+    "ko", "ja", "fa", "it", "pl", "nl", "ro", "ms", "fil", "he", "el", "sv",
+    "cs", "hu", "fi", "no", "da", "sk", "az", "uz",
+}
 _TRADER_NICK = re.compile(
     r"(nft|нфт|gifts?|гифт|resale|ресейл|tonnel|portals?|mrkt|fragment|floor|flip|snipe|getgems|collect)",
     re.IGNORECASE,
@@ -170,12 +178,19 @@ def looks_like_trader_username(username: Optional[str]) -> bool:
 
 
 def looks_russian(metrics: AccountMetrics) -> bool:
-    """Язык клиента ru или кириллица в имени/био — отсекаем ин.перекупов."""
+    """Режем явных иностранцев. lang_code у чужих часто пустой — из-за этого лохи пропадали."""
     lang = (metrics.lang_code or "").strip().lower().replace("_", "-")
-    if lang == "ru" or lang.startswith("ru-"):
+    base = lang.split("-", 1)[0]
+    if base in {"ru", "uk", "be", "kk"}:
         return True
     text = f"{metrics.first_name or ''} {metrics.last_name or ''} {metrics.bio or ''}"
-    return bool(_CYRILLIC.search(text))
+    if _CYRILLIC.search(text):
+        return True
+    if base in _FOREIGN_LANG:
+        return False
+    if _FOREIGN_SCRIPT.search(text):
+        return False
+    return True
 
 
 def looks_like_shell_profile(metrics: AccountMetrics) -> bool:
@@ -288,8 +303,11 @@ class ProfileFilter:
         else:
             bucket = reasons[0].split(":")[0][:40] if reasons else "skip"
             self.skip_counts[bucket] += 1
-            if self.skip_counts[bucket] <= 5:
+            n = self.skip_counts[bucket]
+            if n <= 8 or n % 20 == 0 or self.checked % 15 == 0:
                 LOGGER.info("SKIP user=%s %s", metrics.user_id, "; ".join(reasons))
+            if self.checked % 20 == 0:
+                LOGGER.info("воронка: %s", self.dump_stats())
 
         return FilterDecision(
             matched=matched,

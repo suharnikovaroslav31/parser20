@@ -246,6 +246,25 @@ class FilterTests(unittest.TestCase):
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
+    def test_latin_name_without_lang_still_matches(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift()],
+            metrics=_metrics(lang_code=None, first_name="Dima", last_name=""),
+            price=2.0,
+        )
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+    def test_skip_chinese_script(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift()],
+            metrics=_metrics(lang_code=None, first_name="小明"),
+            price=2.0,
+        )
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("русск" in reason for reason in decision.reasons))
+
     def test_skip_old_market_shell(self) -> None:
         snap = _snapshot(
             gifts=[_gift()],

@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260917-3"
+BUILD = "20260917-4"
 
 
 def setup_logging() -> None:
@@ -261,25 +261,28 @@ class AnalyticsApp:
                 continue
 
     async def _heartbeat(self) -> None:
+        ticks = 0
         while not self._stop.is_set():
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=45)
+                await asyncio.wait_for(self._stop.wait(), timeout=20)
                 return
             except asyncio.TimeoutError:
+                ticks += 1
                 connected = False
                 try:
                     connected = bool(self.scanner.client.is_connected())
                 except Exception:
                     pass
                 LOGGER.info(
-                    "жив | stage=%s seen=%s matched=%s tg=%s pass=%s",
+                    "жив | stage=%s seen=%s matched=%s tg=%s pass=%s | %s",
                     self.markets.stage,
                     self._seen,
                     self._matched,
                     "ok" if connected else "нет",
                     "да" if self._pass_task is not None and not self._pass_task.done() else "нет",
+                    self.filters.dump_stats(),
                 )
-                if connected:
+                if connected and ticks % 2 == 0:
                     await self.scanner.ping()
 
     async def _watchdog(self) -> None:

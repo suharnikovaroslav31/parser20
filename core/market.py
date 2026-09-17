@@ -31,8 +31,8 @@ from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
-CHEAP_PAGES = 2
-NEW_PAGES = 6
+CHEAP_PAGES = 4
+NEW_PAGES = 8
 EXTERNAL_LIMIT = 25
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
@@ -240,6 +240,11 @@ class GiftMarketScanner:
                 people_count += 1
                 yield snapshot
             LOGGER.info("Люди вокруг сессии: снимков %s", people_count)
+            if people_count == 0:
+                LOGGER.warning(
+                    "Людей нет — у сканер-акка пустые чаты. Остаётся Telegram-ресейл. "
+                    "Заведи акк в чаты, где дарят гифты."
+                )
             async for snapshot in self._iter_source("telegram-resale", self._iter_telegram_resale()):
                 telegram_count += 1
                 yield snapshot
@@ -266,7 +271,7 @@ class GiftMarketScanner:
             self._people_bootstrapped = True
         else:
             await self.scanner.refresh_people_queue()
-        async for snapshot in self.scanner.drain_queue(limit=280):
+        async for snapshot in self.scanner.drain_queue(limit=400):
             yield snapshot
 
     async def _iter_telegram_resale(self) -> AsyncIterator[ProfileSnapshot]:
