@@ -207,6 +207,13 @@ class AnalyticsApp:
             if self._stop.is_set() or not self.live.scanner_enabled:
                 break
             await self.handle_snapshot(snapshot)
+        try:
+            await asyncio.wait_for(
+                self.logger_bot.announce_pass(BUILD, self.filters.dump_stats()),
+                timeout=15,
+            )
+        except Exception as exc:
+            LOGGER.warning("сводка круга не ушла: %s", exc)
 
     async def _scan_loop(self, live: bool) -> None:
         while not self._stop.is_set():
@@ -231,7 +238,7 @@ class AnalyticsApp:
                 except asyncio.TimeoutError:
                     continue
                 continue
-            LOGGER.info("Старт прохода: Telegram NEW, потом люди")
+            LOGGER.info("Старт прохода: люди с гифтами, потом NEW-дампы не у рынка")
             self._pass_task = asyncio.create_task(self._one_pass(), name="market-pass")
             try:
                 await self._pass_task

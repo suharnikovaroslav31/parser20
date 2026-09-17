@@ -262,8 +262,7 @@ class GiftLogger:
     async def announce_build(self, build: str, admin_id: int) -> None:
         text = (
             f"{e('lightning')} <b>сборка</b> <code>{_esc(build)}</code> запущена\n"
-            f"короткие круги NEW, лохи не с пола рынка\n"
-            f"если этого сообщения не было — хост не подтянул git, нужен Rebuild без кэша"
+            f"лохи = полученные гифты, рынок только явный промах по цене"
         )
         sent = 0
         seen: set[int] = set()
@@ -288,6 +287,26 @@ class GiftLogger:
             LOGGER.info("пинг сборки %s ушёл в %s чат(ов)", build, sent)
         else:
             LOGGER.error("пинг сборки %s никуда не ушёл — группа/админ не видят бота", build)
+
+    async def announce_pass(self, build: str, stats: str) -> None:
+        if not self.log_group_id:
+            return
+        text = (
+            f"{e('chart')} круг <code>{_esc(build)}</code>\n"
+            f"{_esc(stats)}"
+        )
+        try:
+            await asyncio.wait_for(
+                self.bot.send_message(
+                    chat_id=self.log_group_id,
+                    text=text,
+                    disable_web_page_preview=True,
+                    parse_mode=ParseMode.HTML,
+                ),
+                timeout=12,
+            )
+        except Exception as exc:
+            LOGGER.warning("сводка круга: %s", exc)
 
     async def _deliver(self, text: str, markup, *, html: bool) -> None:
         await asyncio.wait_for(

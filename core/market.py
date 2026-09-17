@@ -40,10 +40,10 @@ from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
 CHEAP_PAGES = 0
-NEW_PAGES = 1
+NEW_PAGES = 2
 MAX_NOOB_COLLECTIONS = 400
-COLLECTIONS_PER_PASS = 120
-PEOPLE_PER_PASS = 40
+COLLECTIONS_PER_PASS = 80
+PEOPLE_PER_PASS = 120
 EXTERNAL_LIMIT = 25
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
@@ -254,6 +254,15 @@ class GiftMarketScanner:
                 LOGGER.error("Telegram нет связи — этот проход пропускаю")
                 return
             people_count = 0
+            async for snapshot in self._iter_source("people", self._iter_people()):
+                people_count += 1
+                yield snapshot
+            LOGGER.info("Люди вокруг сессии: снимков %s", people_count)
+            if people_count == 0:
+                LOGGER.warning(
+                    "Людей нет — у сканер-акка пустые чаты. "
+                    "Заведи акк в чаты, где дарят гифты."
+                )
             async for snapshot in self._iter_source("telegram-resale", self._iter_telegram_resale()):
                 telegram_count += 1
                 yield snapshot
@@ -264,15 +273,6 @@ class GiftMarketScanner:
                 self._skipped_known,
                 self._skipped_smart,
             )
-            async for snapshot in self._iter_source("people", self._iter_people()):
-                people_count += 1
-                yield snapshot
-            LOGGER.info("Люди вокруг сессии: снимков %s", people_count)
-            if people_count == 0:
-                LOGGER.warning(
-                    "Людей нет — у сканер-акка пустые чаты. "
-                    "Заведи акк в чаты, где дарят гифты."
-                )
         except asyncio.CancelledError:
             raise
         except Exception:

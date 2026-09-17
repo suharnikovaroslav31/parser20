@@ -169,12 +169,12 @@ def profile_richness(metrics: AccountMetrics) -> int:
     )
 
 
-FLOOR_HUG_RATIO = 0.92
-MARKET_FLOOR_BAND = 0.04
+FLOOR_HUG_RATIO = 0.55
+MARKET_FLOOR_BAND = 0.08
 
 
 def listing_hugs_floor(ask: Optional[float], fair_value: Optional[float], *, ratio: float = FLOOR_HUG_RATIO) -> bool:
-    """Цена близко к последней продаже — знает рынок."""
+    """Цена ≥ 55% последней продажи — знает рынок, не лох."""
     if ask is None or fair_value is None or fair_value <= 0 or ask <= 0:
         return False
     return ask >= fair_value * ratio
@@ -265,7 +265,10 @@ class ProfileFilter:
         self.checked += 1
         reasons: list[str] = []
         metrics = snapshot.metrics
+        people = snapshot.source not in _MARKET_SOURCES
         visible = [gift for gift in snapshot.unique_gifts if not gift.unsaved]
+        if people and not visible:
+            visible = list(snapshot.unique_gifts)
         unique_count = len(visible)
         cheapest = self._cheapest(visible) or self._cheapest(snapshot.unique_gifts)
         price = snapshot.min_floor_ton
@@ -353,7 +356,7 @@ class ProfileFilter:
         if looks_like_reseller_bio(metrics.bio):
             found.append("в био признаки перекупа")
         hidden_nfts = [gift for gift in snapshot.unique_gifts if gift.unsaved]
-        if hidden_nfts:
+        if hidden_nfts and snapshot.source in _MARKET_SOURCES:
             found.append(f"скрытые NFT: {len(hidden_nfts)}")
         shown = len(snapshot.unique_gifts) + len(snapshot.regular_gifts)
         total_gifts = metrics.stargifts_count

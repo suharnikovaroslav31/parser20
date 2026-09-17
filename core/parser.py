@@ -35,7 +35,7 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.functions.payments import GetSavedStarGiftsRequest
 from telethon.tl.functions.users import GetFullUserRequest
-from telethon.tl.types import Channel, InputPeerUser, InputUser, StarGift, User
+from telethon.tl.types import Channel, InputPeerUser, InputUser, PeerUser, StarGift, User
 
 try:
     from telethon.tl.types import MessageActionStarGift
@@ -448,14 +448,16 @@ class ProfileScanner:
         enqueued = 0
         enqueued += await self._enqueue_seeds()
         enqueued += await self._enqueue_contacts()
-        enqueued += await self._enqueue_recent_gift_recipients(dialogs=50, messages=15)
+        enqueued += await self._enqueue_recent_gift_recipients(dialogs=150, messages=40)
         enqueued += await self._enqueue_seed_chats()
+        enqueued += await self._enqueue_dialogs(limit=300)
         LOGGER.info("Очередь кандидатов: %s профилей", enqueued)
         return enqueued
 
     async def refresh_people_queue(self) -> int:
         """Шире круг: новые гифты + свежие диалоги между кругами."""
-        count = await self._enqueue_recent_gift_recipients(dialogs=30, messages=10)
+        count = await self._enqueue_recent_gift_recipients(dialogs=80, messages=25)
+        count += await self._enqueue_dialogs(limit=120)
         LOGGER.info("Обновление людей: +%s", count)
         return count
 
@@ -492,34 +494,56 @@ class ProfileScanner:
         if recipient_id:
             if isinstance(chat, User) and chat.id == recipient_id:
                 return chat
-            try:
-                entity = await self._flood.call(
-                    lambda: self.client.get_entity(recipient_id),
-                    label=f"gift_peer:{recipient_id}",
-                )
-            except (RPCError, TypeError, ValueError):
-                entity = None
-            if isinstance(entity, User):
-                return entity
+            for ref in (PeerUser(recipient_id), recipient_id):
+                try:
+                    entity = await self._flood.call(
+                        lambda target=ref: self.client.get_entity(target),
+                        label=f"gift_peer:{recipient_id}",
+                    )
+                except (RPCError, TypeError, ValueError):
+                    entity = None
+                if isinstance(entity, User):
+                    return entity
         if isinstance(chat, User):
             return chat
         return None
 
     async def _enqueue_user(self, user: User, source: str, *, force: bool = False) -> bool:
-        if not isinstance(user, User) or user.bot or user.deleted or getattr(user, "min", False):
+        if not isinstance(user, User) or user.bot or user.deleted:
             return False
+        if getattr(user, "min", False):
+            upgraded = await self._upgrade_min_user(user)
+            if upgraded is None:
+                return False
+            user = upgraded
         if self._me_id and user.id == self._me_id:
             return False
         now = time.time()
         marked = self._seen_at.get(user.id)
-        if not force and marked is not None and now - marked < 2 * 3600:
+        if not force and marked is not None and now - marked < 45 * 60:
             return False
         self._seen_at[user.id] = now
         if len(self._seen_at) > 20_000:
-            cutoff = now - 2 * 3600
+            cutoff = now - 45 * 60
             self._seen_at = {uid: ts for uid, ts in self._seen_at.items() if ts >= cutoff}
         await self._queue.put((user, source))
         return True
+
+    async def _upgrade_min_user(self, user: User) -> Optional[User]:
+        """min-юзер из чата без полного профиля — иначе лохи из гифт-групп выпадали."""
+        for ref in (user, PeerUser(user.id)):
+            try:
+                entity = await self._flood.call(
+                    lambda target=ref: self.client.get_entity(target),
+                    label=f"upgrade:{user.id}",
+                )
+            except (RPCError, TypeError, ValueError):
+                continue
+            if isinstance(entity, User) and not entity.bot and not entity.deleted:
+                return entity
+        if self._access_hash(user):
+            return user
+        return None
 
     async def _resolve_user(self, ref: str | int) -> Optional[User]:
         try:
@@ -885,6 +909,12 @@ class ProfileScanner:
             for gift in unique[:2]:
                 await self._enrich_telegram_floor(gift)
             total_ton, min_floor, cheap = await self.market.estimate_portfolio(unique)
+            if min_floor is None:
+                priced = [gift.best_floor_ton for gift in unique if gift.best_floor_ton is not None]
+                min_floor = min(priced) if priced else None
+                total_ton = min_floor or 0.0
+            if not cheap and unique:
+                cheap = unique[:1]
             ton_usd = await self.market.get_ton_usd()
             metrics.activity_score = compute_activity_score(
                 username=metrics.username,

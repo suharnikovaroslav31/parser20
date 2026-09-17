@@ -9,7 +9,7 @@ from pathlib import Path
 
 LOGGER = logging.getLogger("tg_gifts.listings")
 DEFAULT_PATH = Path("data/seen_listings.json")
-VERSION = 7
+VERSION = 8
 TTL_SEC = 2 * 3600
 
 

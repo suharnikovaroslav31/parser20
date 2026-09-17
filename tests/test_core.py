@@ -356,10 +356,20 @@ class FilterTests(unittest.TestCase):
         self.assertFalse(decision.matched)
         self.assertTrue(any("оценк" in reason or "перекупа" in reason for reason in decision.reasons))
 
-    def test_small_undercut_still_matches(self) -> None:
+    def test_small_undercut_is_flipper(self) -> None:
         gift = _gift(price=4.7, collection_floor=5.0)
         gift.fair_value_ton = None
         snap = _snapshot(gifts=[gift], metrics=_metrics(), price=4.7)
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("рынка" in reason or "оценк" in reason for reason in decision.reasons))
+
+    def test_received_unsaved_gift_matches(self) -> None:
+        gift = _gift(price=2.0, unsaved=True)
+        gift.on_resale = False
+        gift.market_floor_ton = None
+        snap = _snapshot(gifts=[gift], metrics=_metrics(), price=2.0)
+        snap.source = "recent_gift_peer"
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
@@ -455,7 +465,7 @@ class ProfileNftCountTests(unittest.TestCase):
 
 class TrackerVersionTests(unittest.TestCase):
     def test_tracker_version_bumped(self) -> None:
-        self.assertGreaterEqual(TRACKER_VERSION, 7)
+        self.assertGreaterEqual(TRACKER_VERSION, 8)
         self.assertTrue(callable(ListingTracker))
 
     def test_expired_lot_is_processed_again(self) -> None:
@@ -520,7 +530,7 @@ class BuildTests(unittest.TestCase):
         from core.runtime import BUILD
 
         self.assertTrue(BUILD.startswith("20260917-"))
-        self.assertGreaterEqual(BUILD, "20260917-10")
+        self.assertGreaterEqual(BUILD, "20260917-11")
 
 
 if __name__ == "__main__":
