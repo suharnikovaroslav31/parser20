@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260916-10"
+BUILD = "20260917-2"
 
 
 def setup_logging() -> None:
@@ -217,6 +217,13 @@ class AnalyticsApp:
                 except asyncio.TimeoutError:
                     continue
                 continue
+            if self.scanner._flood.session_dead:
+                LOGGER.error("Сессия Telegram отозвана — пауза 15 мин, пока не вставишь новый TELEGRAM_SESSION")
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=900)
+                except asyncio.TimeoutError:
+                    continue
+                continue
             if not await self.scanner._flood.ensure_connected():
                 LOGGER.error("Нет сессии Telegram — пауза 45с")
                 try:
@@ -235,7 +242,7 @@ class AnalyticsApp:
             except Exception as exc:
                 name = type(exc).__name__
                 if any(token in name.upper() for token in ("AUTHKEY", "UNAUTHORIZED", "SESSIONREVOKED")):
-                    LOGGER.error("Сессия Telegram умерла (%s). Нужен новый TELEGRAM_SESSION", exc)
+                    self.scanner._flood.mark_session_dead(exc)
                     try:
                         await asyncio.wait_for(self._stop.wait(), timeout=60)
                     except asyncio.TimeoutError:
@@ -273,7 +280,7 @@ class AnalyticsApp:
                     "да" if self._pass_task is not None and not self._pass_task.done() else "нет",
                 )
                 if connected:
-                    self.scanner.persist_session()
+                    await self.scanner.ping()
 
     async def _watchdog(self) -> None:
         last = ""
@@ -295,17 +302,13 @@ class AnalyticsApp:
             else:
                 stale = 0
             last = mark
-            if stale < 12:
+            if stale < 18:
                 continue
             LOGGER.error(
-                "сканер завис на %s seen=%s — рву проход и переподключаю Telegram",
+                "сканер завис на %s seen=%s — рву проход, Telegram не трогаю",
                 self.markets.stage,
                 self._seen,
             )
-            try:
-                await self.scanner._flood._recover("watchdog")
-            except Exception:
-                LOGGER.exception("watchdog reconnect")
             task = self._pass_task
             if task is not None and not task.done():
                 task.cancel()
@@ -380,18 +383,47 @@ class AnalyticsApp:
                 os._exit(0)
 
 
+def _write_telegram_session_env(value: str) -> None:
+    from pathlib import Path
+
+    path = Path(".env")
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    out: list[str] = []
+    found = False
+    for line in lines:
+        if line.startswith("TELEGRAM_SESSION="):
+            out.append(f"TELEGRAM_SESSION={value}\n")
+            found = True
+        else:
+            out.append(line)
+    if not found:
+        if out and not str(out[-1]).endswith("\n"):
+            out.append("\n")
+        out.append(f"TELEGRAM_SESSION={value}\n")
+    path.write_text("".join(out), encoding="utf-8")
+    LOGGER.info("TELEGRAM_SESSION записана в .env")
+
+
 async def _export_session() -> None:
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 
+    from core.parser import resolve_session_string
+
     settings = get_settings()
-    client = TelegramClient(settings.session_name, settings.api_id, settings.api_hash)
+    raw = resolve_session_string(settings.telegram_session)
+    session = StringSession(raw) if raw else settings.session_name
+    client = TelegramClient(session, settings.api_id, settings.api_hash)
     await client.connect()
     try:
         if not await client.is_user_authorized():
             LOGGER.error("Локальной сессии нет. Сначала выполните: python main.py --login")
             return
+        me = await client.get_me()
         value = StringSession.save(client.session)
+        LOGGER.info("Экспорт сессии %s id=%s", getattr(me, "first_name", ""), me.id)
         print("\nСкопируйте это значение в TELEGRAM_SESSION на хосте:\n")
         print(value)
         print()
@@ -400,10 +432,19 @@ async def _export_session() -> None:
 
 
 async def _login() -> None:
+    from telethon.sessions import StringSession
+
     settings = get_settings()
-    scanner = ProfileScanner(settings, Storage(settings.database_url, settings.redis_url), TonMarketClient(settings))
+    scanner = ProfileScanner(
+        settings,
+        Storage(settings.database_url, settings.redis_url),
+        TonMarketClient(settings),
+        fresh_login=True,
+    )
     try:
         await scanner.login_interactive()
+        raw = StringSession.save(scanner.client.session)
+        _write_telegram_session_env(raw)
     finally:
         await scanner.close()
 

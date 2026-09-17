@@ -1,6 +1,6 @@
 """
-Фильтры: мамонт = ур.1 и 1–2 дешёвых NFT.
-Флиппера режем по скрытой коллекции и ресейлу, Premium сам по себе не режем.
+Фильтры: мамонт/новичок = ур.1 и 1–2 видимых дешёвых NFT.
+Пустышки на маркете и спрятанная коллекция — это перекупы, не лохи.
 """
 
 from __future__ import annotations
@@ -16,6 +16,20 @@ from core.runtime import LiveFilters
 
 LOGGER = logging.getLogger("tg_gifts.filters")
 
+_MARKET_SOURCES = {
+    "tg_market",
+    "telegram_resale",
+    "mrkt",
+    "tonnel",
+    "portal",
+    "getgems",
+}
+_COMMON_LATIN = {
+    "alex", "max", "mike", "anna", "ivan", "john", "david", "daniel", "maria",
+    "olga", "nick", "kevin", "chris", "james", "robert", "michael", "sarah",
+    "kate", "lisa", "tom", "tim", "adam", "mark", "paul", "peter", "jack",
+    "leo", "artem", "kirill", "andrey", "sergey", "dmitry", "alexander",
+}
 _TRADER_NICK = re.compile(
     r"(nft|нфт|gifts?|гифт|resale|ресейл|tonnel|portals?|mrkt|fragment|floor|flip|snipe|getgems|collect)",
     re.IGNORECASE,
@@ -154,6 +168,29 @@ def looks_like_trader_username(username: Optional[str]) -> bool:
     return bool(_TRADER_NICK.search(username or ""))
 
 
+def looks_like_shell_profile(metrics: AccountMetrics) -> bool:
+    return (not metrics.username) and (not (metrics.bio or "").strip()) and (not metrics.has_photo)
+
+
+def looks_like_burner_name(first_name: str, last_name: str = "") -> bool:
+    """Два рандомных латинских слова без кириллицы — типичный купленный альт."""
+    joined = f"{first_name or ''} {last_name or ''}".strip()
+    if not joined or re.search(r"[А-Яа-яЁё]", joined):
+        return False
+    tokens = re.findall(r"[A-Za-z]+", joined)
+    if any(token.lower() in _COMMON_LATIN for token in tokens):
+        return False
+    letters = [ch.lower() for ch in joined if ch.isalpha()]
+    if len(letters) < 10:
+        return False
+    vowels = sum(1 for ch in letters if ch in "aeiouy")
+    if vowels / len(letters) <= 0.32:
+        return True
+    if len(tokens) >= 2 and all(len(token) >= 6 for token in tokens[:2]):
+        return bool(re.search(r"[bcdfghjklmnpqrstvwxz]{4}", joined, re.IGNORECASE))
+    return False
+
+
 class ProfileFilter:
     def __init__(self, live: LiveFilters) -> None:
         self.live = live
@@ -177,8 +214,9 @@ class ProfileFilter:
         self.checked += 1
         reasons: list[str] = []
         metrics = snapshot.metrics
-        unique_count = len(snapshot.unique_gifts)
-        cheapest = self._cheapest(snapshot.unique_gifts)
+        visible = [gift for gift in snapshot.unique_gifts if not gift.unsaved]
+        unique_count = len(visible)
+        cheapest = self._cheapest(visible) or self._cheapest(snapshot.unique_gifts)
         price = snapshot.min_floor_ton
 
         if not metrics.stars_fetched:
@@ -261,6 +299,20 @@ class ProfileFilter:
         hidden_nfts = [gift for gift in snapshot.unique_gifts if gift.unsaved]
         if hidden_nfts:
             found.append(f"скрытые NFT: {len(hidden_nfts)}")
+        shown = len(snapshot.unique_gifts) + len(snapshot.regular_gifts)
+        total_gifts = metrics.stargifts_count
+        if total_gifts is not None and total_gifts >= 8 and total_gifts > shown + 3:
+            found.append(f"гифтов {total_gifts} при витрине {shown} — прячут коллекцию")
+        if snapshot.source in _MARKET_SOURCES:
+            age = metrics.account_age_days
+            shell = looks_like_shell_profile(metrics)
+            burner = looks_like_burner_name(metrics.first_name, metrics.last_name)
+            if shell and age is not None and age > 120:
+                found.append("пустой старый акк на маркете — витрина перекупа")
+            elif shell and metrics.is_premium:
+                found.append("Premium-пустышка на маркете")
+            elif burner and (shell or not metrics.username):
+                found.append("рандомное имя на маркете — альт перекупа")
         listed = {gift.slug for gift in snapshot.cheap_gifts if gift.slug}
         richness = profile_richness(metrics)
         if live.max_activity_score > 0 and richness > live.max_activity_score:

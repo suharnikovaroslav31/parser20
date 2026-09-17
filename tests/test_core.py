@@ -180,10 +180,11 @@ class FilterTests(unittest.TestCase):
         decision = self.flt.evaluate(snap)
         self.assertFalse(decision.matched)
 
-    def test_stargifts_count_alone_still_matches(self) -> None:
+    def test_skip_hidden_stargifts_count(self) -> None:
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=20), price=2.0)
         decision = self.flt.evaluate(snap)
-        self.assertTrue(decision.matched, decision.reasons)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("прячут" in reason for reason in decision.reasons))
 
     def test_few_extra_gifts_still_match(self) -> None:
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=4), price=2.0)
@@ -221,6 +222,55 @@ class FilterTests(unittest.TestCase):
             metrics=_metrics(username=None, has_photo=False, bio=""),
             price=2.0,
         )
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+    def test_skip_old_market_shell(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift()],
+            metrics=_metrics(username=None, has_photo=False, bio="", account_age_days=400),
+            price=2.0,
+        )
+        snap.source = "tg_market"
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("пустой" in reason for reason in decision.reasons))
+
+    def test_old_mamont_from_people_still_matches(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift()],
+            metrics=_metrics(account_age_days=400, username=None, has_photo=True, bio=""),
+            price=2.0,
+        )
+        snap.source = "recent_gift_peer"
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
+    def test_skip_burner_name_on_market(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift()],
+            metrics=_metrics(
+                username=None,
+                has_photo=False,
+                bio="",
+                first_name="Ywnnwkan",
+                last_name="Absoanwbw",
+                account_age_days=40,
+            ),
+            price=2.0,
+        )
+        snap.source = "tg_market"
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("альт" in reason for reason in decision.reasons))
+
+    def test_young_empty_market_noob_matches(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift()],
+            metrics=_metrics(username=None, has_photo=False, bio="", first_name="Маша", account_age_days=20),
+            price=2.0,
+        )
+        snap.source = "tg_market"
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
@@ -286,6 +336,11 @@ class ProfileNftCountTests(unittest.TestCase):
         merged = profile_unique_gifts([], listed, gifts_fetched=True)
         self.assertEqual([gift.slug for gift in merged], ["A-1"])
 
+    def test_empty_profile_with_hidden_count_is_not_one_nft(self) -> None:
+        listed = _gift("A-1")
+        merged = profile_unique_gifts([], listed, gifts_fetched=True, stargifts_count=20)
+        self.assertEqual(merged, [])
+
     def test_unread_profile_counts_nothing(self) -> None:
         listed = _gift("A-1")
         merged = profile_unique_gifts([], listed, gifts_fetched=False)
@@ -316,11 +371,11 @@ class NanotonTests(unittest.TestCase):
 
 
 class SearchDirectionTests(unittest.TestCase):
-    def test_telegram_scans_cheap_then_new(self) -> None:
+    def test_telegram_scans_new_then_cheap(self) -> None:
         from core.market import CHEAP_PAGES, NEW_PAGES
 
+        self.assertGreaterEqual(NEW_PAGES, CHEAP_PAGES)
         self.assertGreaterEqual(CHEAP_PAGES, 1)
-        self.assertGreaterEqual(NEW_PAGES, 1)
 
     def test_gift_action_prefers_recipient_peer(self) -> None:
         from core.parser import ProfileScanner

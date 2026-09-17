@@ -31,6 +31,7 @@ _SOURCE_NAME = {
     "recent_gift_peer": "гифт",
     "live_gift_received": "гифт",
     "live_gift_action": "гифт",
+    "contact": "контакт",
     "seed_username": "seed",
     "seed_id": "seed",
     "mrkt": "MRKT",

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import logging
 import time
@@ -31,6 +32,7 @@ from telethon.errors import (
     UserPrivacyRestrictedError,
 )
 from telethon.sessions import StringSession
+from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.functions.payments import GetSavedStarGiftsRequest
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import Channel, InputPeerUser, InputUser, StarGift, User
@@ -55,6 +57,7 @@ from core.ton_client import TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.parser")
 SESSION_FILE = Path("data/mtproto.session.txt")
+ENV_HASH_FILE = Path("data/mtproto.env.sha256")
 
 try:
     from telethon.tl.types import MessageActionStarGiftUnique
@@ -88,6 +91,34 @@ def _write_session_file(raw: str) -> None:
     SESSION_FILE.write_text(raw, encoding="utf-8")
 
 
+def _env_hash(raw: str) -> str:
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _read_env_hash() -> str:
+    try:
+        return ENV_HASH_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _write_env_hash(env_raw: str) -> None:
+    ENV_HASH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ENV_HASH_FILE.write_text(_env_hash(env_raw), encoding="utf-8")
+
+
+def resolve_session_string(env_raw: str) -> str:
+    """Файл — живой ключ. Если TELEGRAM_SESSION в env сменили, берём её (новый аккаунт)."""
+    env_raw = (env_raw or "").strip()
+    file_raw = _read_session_file()
+    if env_raw and _env_hash(env_raw) != _read_env_hash():
+        LOGGER.info("TELEGRAM_SESSION новая — переключаю аккаунт сканера")
+        return env_raw
+    return file_raw or env_raw
+
+
 class TelegramFloodControl:
     """FloodWait и зависшие RPC: не спим минутами, при timeout переподключаемся."""
 
@@ -99,6 +130,8 @@ class TelegramFloodControl:
         self.stop_event: Optional[asyncio.Event] = None
         self._reconnect_lock = asyncio.Lock()
         self._last_reconnect = 0.0
+        self._last_ok = time.monotonic()
+        self.session_dead = False
         self.cool_until = 0.0
 
     @property
@@ -124,33 +157,47 @@ class TelegramFloodControl:
             return
         raise asyncio.CancelledError
 
+    def mark_ok(self) -> None:
+        self._last_ok = time.monotonic()
+
+    def mark_session_dead(self, reason: object) -> None:
+        self.session_dead = True
+        LOGGER.error(
+            "Сессия Telegram отозвана (%s). Нужен новый TELEGRAM_SESSION — старый ключ уже не живой",
+            reason,
+        )
+
     async def ensure_connected(self) -> bool:
         client = self.client
-        if client is None:
+        if client is None or self.session_dead:
             return False
         try:
             if not client.is_connected():
                 LOGGER.warning("Telegram оффлайн — подключаюсь")
                 await asyncio.wait_for(client.connect(), timeout=12)
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=8):
-                LOGGER.error("Сессия Telegram слетела — нужен новый TELEGRAM_SESSION")
+                self.mark_session_dead("is_user_authorized=false")
                 return False
+            self.mark_ok()
             return True
         except Exception as exc:
             LOGGER.warning("Telegram connect: %s", exc)
             return False
 
     async def _recover(self, label: str) -> None:
+        """Только если сокет мёртв. disconnect при живом ключе даёт AUTH_KEY_DUPLICATED."""
         client = self.client
-        if client is None:
+        if client is None or self.session_dead:
             return
         async with self._reconnect_lock:
-            self._last_reconnect = time.monotonic()
-            LOGGER.warning("Telegram reconnect после зависания %s", label)
-            try:
-                await asyncio.wait_for(client.disconnect(), timeout=3)
-            except Exception:
-                pass
+            now = time.monotonic()
+            if now - self._last_reconnect < 45:
+                return
+            if client.is_connected():
+                LOGGER.warning("Telegram timeout %s — сокет жив, disconnect не делаю", label)
+                return
+            self._last_reconnect = now
+            LOGGER.warning("Telegram reconnect после обрыва %s", label)
             try:
                 await asyncio.wait_for(client.connect(), timeout=12)
             except Exception as exc:
@@ -158,8 +205,11 @@ class TelegramFloodControl:
                 return
             try:
                 if await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    self.mark_ok()
                     raw = StringSession.save(client.session)
                     _write_session_file(raw)
+                else:
+                    self.mark_session_dead("reconnect unauthorized")
             except Exception:
                 pass
 
@@ -183,7 +233,7 @@ class TelegramFloodControl:
                     await task
                 except (Exception, asyncio.CancelledError):
                     pass
-            LOGGER.warning("Telegram timeout %s — reconnect", label)
+            LOGGER.warning("Telegram timeout %s", label)
             await self._recover(label)
             raise
 
@@ -193,7 +243,9 @@ class TelegramFloodControl:
             if self._stopping():
                 raise asyncio.CancelledError
             try:
-                return await self._await_rpc(factory, label)
+                result = await self._await_rpc(factory, label)
+                self.mark_ok()
+                return result
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError as exc:
@@ -212,7 +264,7 @@ class TelegramFloodControl:
             except RPCError as exc:
                 name = type(exc).__name__.upper()
                 if any(token in name for token in ("AUTHKEY", "UNAUTHORIZED", "SESSIONREVOKED", "SESSIONEXPIRED")):
-                    LOGGER.error("Сессия Telegram: %s", exc)
+                    self.mark_session_dead(exc)
                     raise
                 message = str(exc).upper()
                 if any(token in message for token in ("PRIVACY", "GIFT", "SAVED_STAR", "USER_NOT_MUTUAL")):
@@ -235,24 +287,30 @@ class ProfileScanner:
         settings: Settings,
         storage: Storage,
         market: TonMarketClient,
+        *,
+        fresh_login: bool = False,
     ) -> None:
         self.settings = settings
         self.storage = storage
         self.market = market
-        self._limiter = AsyncRateLimiter(settings.telegram_concurrency, min_interval=0.35)
+        self._limiter = AsyncRateLimiter(settings.telegram_concurrency, min_interval=0.55)
         self._flood = TelegramFloodControl(self._limiter)
         self._seen_at: dict[int, float] = {}
         self._me_id: Optional[int] = None
         self._queue: asyncio.Queue[tuple[User, str]] = asyncio.Queue()
-        raw = _read_session_file() or self.settings.telegram_session.strip()
-        if raw:
-            try:
-                session = StringSession(raw)
-            except Exception as exc:
-                LOGGER.error("TELEGRAM_SESSION не читается: %s", exc)
-                session = StringSession()
+        if fresh_login:
+            LOGGER.info("Чистый логин: сессия из .env не берётся")
+            session = StringSession()
         else:
-            session = settings.session_name
+            raw = resolve_session_string(self.settings.telegram_session)
+            if raw:
+                try:
+                    session = StringSession(raw)
+                except Exception as exc:
+                    LOGGER.error("TELEGRAM_SESSION не читается: %s", exc)
+                    session = StringSession()
+            else:
+                session = settings.session_name
         self.client = TelegramClient(
             session,
             settings.api_id,
@@ -305,7 +363,30 @@ class ProfileScanner:
         self._me_id = int(me.id)
         self.persist_session()
         LOGGER.info("MTProto клиент вошёл как %s id=%s", _user_display(me), me.id)
+        self._flood.mark_ok()
         self._register_live_handlers()
+
+    async def ping(self) -> bool:
+        """Держим updates alive без disconnect — иначе Telegram считает сессию брошенной."""
+        if self._flood.session_dead or not self.client.is_connected():
+            return False
+        try:
+            from telethon.tl.functions.updates import GetStateRequest
+
+            await asyncio.wait_for(self.client(GetStateRequest()), timeout=10)
+            self._flood.mark_ok()
+            self.persist_session()
+            return True
+        except RPCError as exc:
+            name = type(exc).__name__.upper()
+            if any(token in name for token in ("AUTHKEY", "UNAUTHORIZED", "SESSIONREVOKED", "SESSIONEXPIRED")):
+                self._flood.mark_session_dead(exc)
+            else:
+                LOGGER.warning("Telegram ping: %s", exc)
+            return False
+        except Exception as exc:
+            LOGGER.warning("Telegram ping: %s", exc)
+            return False
 
     def persist_session(self) -> None:
         """Пишем актуальный auth key на диск — после рестарта хоста строка из env может быть старой."""
@@ -315,6 +396,7 @@ class ProfileScanner:
             return
         try:
             _write_session_file(raw)
+            _write_env_hash(self.settings.telegram_session.strip())
         except OSError as exc:
             LOGGER.warning("не сохранил сессию на диск: %s", exc)
 
@@ -365,7 +447,8 @@ class ProfileScanner:
         """Наполняет очередь seed-пользователями, чатами и диалогами."""
         enqueued = 0
         enqueued += await self._enqueue_seeds()
-        enqueued += await self._enqueue_recent_gift_recipients(dialogs=80, messages=25)
+        enqueued += await self._enqueue_contacts()
+        enqueued += await self._enqueue_recent_gift_recipients(dialogs=150, messages=35)
         enqueued += await self._enqueue_seed_chats()
         enqueued += await self._enqueue_dialogs()
         LOGGER.info("Очередь кандидатов: %s профилей", enqueued)
@@ -373,8 +456,9 @@ class ProfileScanner:
 
     async def refresh_people_queue(self) -> int:
         """Шире круг: новые гифты + свежие диалоги между кругами."""
-        count = await self._enqueue_recent_gift_recipients(dialogs=60, messages=20)
+        count = await self._enqueue_recent_gift_recipients(dialogs=100, messages=28)
         count += await self._enqueue_dialogs()
+        count += await self._enqueue_contacts()
         LOGGER.info("Обновление людей: +%s", count)
         return count
 
@@ -448,6 +532,24 @@ class ProfileScanner:
             return None
         return entity if isinstance(entity, User) else None
 
+    async def _enqueue_contacts(self) -> int:
+        """Контакты сессии — живые люди, не витрина маркета."""
+        try:
+            result = await self._flood.call(
+                lambda: self.client(GetContactsRequest(hash=0)),
+                label="contacts",
+            )
+        except (RPCError, TypeError) as exc:
+            LOGGER.info("контакты недоступны: %s", exc)
+            return 0
+        count = 0
+        for user in getattr(result, "users", None) or []:
+            if isinstance(user, User) and await self._enqueue_user(user, "contact"):
+                count += 1
+        if count:
+            LOGGER.info("Контакты: +%s", count)
+        return count
+
     async def _enqueue_seeds(self) -> int:
         count = 0
         for username in self.settings.seed_usernames:
@@ -508,7 +610,7 @@ class ProfileScanner:
     async def _enqueue_dialogs(self) -> int:
         count = 0
         try:
-            async for dialog in self.client.iter_dialogs(limit=400):
+            async for dialog in self.client.iter_dialogs(limit=600):
                 entity = dialog.entity
                 if isinstance(entity, User) and await self._enqueue_user(entity, "dialog"):
                     count += 1
@@ -774,7 +876,7 @@ class ProfileScanner:
         started = time.perf_counter()
         try:
             metrics = await self.fetch_metrics(user)
-            unique, regular = await self.fetch_saved_gifts(user, stop_after_unique=4)
+            unique, regular = await self.fetch_saved_gifts(user, stop_after_unique=8)
             metrics.gifts_fetched = True
             for gift in unique:
                 await self._enrich_telegram_floor(gift)

@@ -1,5 +1,5 @@
 """
-Источники кандидатов: люди вокруг сессии, затем дешёвые и свежие лоты Telegram.
+Источники кандидатов: люди вокруг сессии, затем свежие и дешёвые лоты Telegram.
 
 MRKT / Tonnel / Portals / Getgems не обходятся — там уже ждут скам-ЛС.
 Продавцы TG берутся из result.users.
@@ -31,8 +31,8 @@ from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
-CHEAP_PAGES = 5
-NEW_PAGES = 2
+CHEAP_PAGES = 2
+NEW_PAGES = 6
 EXTERNAL_LIMIT = 25
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
@@ -129,6 +129,8 @@ def profile_unique_gifts(
         return []
     if profile_uniques:
         return profile_uniques
+    if stargifts_count is not None and stargifts_count > 2:
+        return []
     return [listed]
 
 
@@ -242,7 +244,7 @@ class GiftMarketScanner:
                 telegram_count += 1
                 yield snapshot
             LOGGER.info(
-                "Telegram cheap+NEW: лотов в цене %s, снимков продавца %s, повторный пропуск %s",
+                "Telegram NEW+cheap: лотов в цене %s, снимков продавца %s, повторный пропуск %s",
                 self._tg_priced,
                 telegram_count,
                 self._skipped_known,
@@ -264,7 +266,7 @@ class GiftMarketScanner:
             self._people_bootstrapped = True
         else:
             await self.scanner.refresh_people_queue()
-        async for snapshot in self.scanner.drain_queue(limit=160):
+        async for snapshot in self.scanner.drain_queue(limit=280):
             yield snapshot
 
     async def _iter_telegram_resale(self) -> AsyncIterator[ProfileSnapshot]:
@@ -322,11 +324,11 @@ class GiftMarketScanner:
         title: str,
         ton_usd: float,
     ) -> AsyncIterator[ProfileSnapshot]:
+        async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=False, max_pages=NEW_PAGES):
+            yield snapshot
         if CHEAP_PAGES:
             async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=True, max_pages=CHEAP_PAGES):
                 yield snapshot
-        async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=False, max_pages=NEW_PAGES):
-            yield snapshot
 
     async def _resale_pages(
         self,
@@ -887,7 +889,7 @@ class GiftMarketScanner:
         if user is None or user.bot or getattr(user, "deleted", False):
             return [], [], False
         try:
-            uniques, regular = await self.scanner.fetch_saved_gifts(user, stop_after_unique=4)
+            uniques, regular = await self.scanner.fetch_saved_gifts(user, stop_after_unique=8)
         except Exception as exc:
             LOGGER.info("gifts профиля %s: %s", getattr(user, "id", "?"), exc)
             return [], [], False
