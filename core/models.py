@@ -109,6 +109,7 @@ class UniqueGift:
     availability_total: Optional[int] = None
     on_resale: bool = False
     telegram_floor_ton: Optional[float] = None
+    fair_value_ton: Optional[float] = None
     market_floor_ton: Optional[float] = None
     market_source: str = ""
     listed_count: Optional[int] = None

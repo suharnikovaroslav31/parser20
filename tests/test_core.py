@@ -50,6 +50,7 @@ def _gift(slug: str = "PlushPepe-1", price: float = 2.0, *, unsaved: bool = Fals
         number=1,
         on_resale=True,
         telegram_floor_ton=floor,
+        fair_value_ton=floor,
         market_floor_ton=ask,
         market_source="telegram_resale",
         unsaved=unsaved,
@@ -325,7 +326,14 @@ class FilterTests(unittest.TestCase):
         )
         decision = self.flt.evaluate(snap)
         self.assertFalse(decision.matched)
-        self.assertTrue(any("флора" in reason for reason in decision.reasons))
+        self.assertTrue(any("оценк" in reason for reason in decision.reasons))
+
+    def test_no_fair_value_does_not_skip(self) -> None:
+        gift = _gift(price=2.0, collection_floor=2.0)
+        gift.fair_value_ton = None
+        snap = _snapshot(gifts=[gift], metrics=_metrics(), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
 
     def test_unlisted_profile_nft_still_matches(self) -> None:
         gift = _gift(price=2.0, collection_floor=2.0)
@@ -434,11 +442,11 @@ class NanotonTests(unittest.TestCase):
 
 
 class SearchDirectionTests(unittest.TestCase):
-    def test_telegram_scans_new_below_floor_only(self) -> None:
+    def test_telegram_scans_new_and_cheap(self) -> None:
         from core.market import CHEAP_PAGES, NEW_PAGES
 
-        self.assertEqual(CHEAP_PAGES, 0)
-        self.assertGreaterEqual(NEW_PAGES, 4)
+        self.assertGreaterEqual(CHEAP_PAGES, 3)
+        self.assertGreaterEqual(NEW_PAGES, CHEAP_PAGES)
 
     def test_gift_action_prefers_recipient_peer(self) -> None:
         from core.parser import ProfileScanner

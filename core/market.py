@@ -1,6 +1,6 @@
 """
-Источники: кому недавно прилетел гифт, затем только свежие лоты с глупой ценой.
-Дешёвый флор Telegram не обходим — там сидят те, кто шарит за NFT.
+Источники: получатели гифтов, свежие лоты и дешёвые лоты ниже оценки.
+Текущий флор маркета не считаем «знанием NFT» — это просто минимальный ask.
 
 MRKT / Tonnel / Portals / Getgems не обходятся — там уже ждут скам-ЛС.
 Продавцы TG берутся из result.users.
@@ -32,9 +32,9 @@ from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
-CHEAP_PAGES = 0
-NEW_PAGES = 10
-MAX_NOOB_COLLECTIONS = 80
+CHEAP_PAGES = 5
+NEW_PAGES = 12
+MAX_NOOB_COLLECTIONS = 250
 EXTERNAL_LIMIT = 25
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
@@ -276,7 +276,7 @@ class GiftMarketScanner:
             self._people_bootstrapped = True
         else:
             await self.scanner.refresh_people_queue()
-        async for snapshot in self.scanner.drain_queue(limit=400):
+        async for snapshot in self.scanner.drain_queue(limit=600):
             if snapshot.unique_gifts:
                 yield snapshot
 
@@ -297,7 +297,7 @@ class GiftMarketScanner:
         resale_types.sort(key=lambda item: int(getattr(item, "stars", 10**9) or 10**9))
         resale_types = resale_types[:MAX_NOOB_COLLECTIONS]
         LOGGER.info(
-            "Каталог Telegram Gifts: %s типов, дешёвые коллекции на NEW %s",
+            "Каталог Telegram Gifts: %s типов, в обходе %s",
             len(catalog),
             len(resale_types),
         )
@@ -343,6 +343,9 @@ class GiftMarketScanner:
     ) -> AsyncIterator[ProfileSnapshot]:
         async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=False, max_pages=NEW_PAGES):
             yield snapshot
+        if CHEAP_PAGES:
+            async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=True, max_pages=CHEAP_PAGES):
+                yield snapshot
 
     async def _resale_pages(
         self,
@@ -397,22 +400,9 @@ class GiftMarketScanner:
                 if not self.tracker.should_process(key):
                     self._skipped_known += 1
                     continue
-                collection_floor = None
-                if slug:
-                    probe = UniqueGift(slug=slug, title=title)
-                    await self.scanner._enrich_telegram_floor(probe)
-                    collection_floor = probe.telegram_floor_ton
-                    if listing_hugs_floor(price, collection_floor):
-                        self._skipped_smart += 1
-                        continue
                 try:
                     snapshot = await self._snapshot_from_telegram_lot(
-                        raw,
-                        users,
-                        price,
-                        ton_usd,
-                        source="tg_market",
-                        collection_floor=collection_floor,
+                        raw, users, price, ton_usd, source="tg_market"
                     )
                 except (RPCError, asyncio.TimeoutError) as exc:
                     LOGGER.info("лот %s %s: %s", title, slug or extra, exc)
@@ -435,7 +425,6 @@ class GiftMarketScanner:
         ton_usd: float,
         *,
         source: str = "tg_market",
-        collection_floor: Optional[float] = None,
     ) -> Optional[ProfileSnapshot]:
         started = time.perf_counter()
         unique, _regular = self.scanner._parse_saved_gift(raw)
@@ -449,11 +438,9 @@ class GiftMarketScanner:
             )
         unique.on_resale = True
         unique.market_floor_ton = price
-        unique.telegram_floor_ton = collection_floor
         unique.market_source = "telegram_resale" if source == "tg_market" else source
-        if unique.telegram_floor_ton is None:
-            await self.scanner._enrich_telegram_floor(unique)
-        if listing_hugs_floor(price, unique.telegram_floor_ton):
+        await self.scanner._enrich_telegram_floor(unique)
+        if listing_hugs_floor(price, unique.fair_value_ton):
             self._skipped_smart += 1
             return None
         owner_id = _peer_user_id(getattr(raw, "owner_id", None))

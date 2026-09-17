@@ -169,14 +169,14 @@ def profile_richness(metrics: AccountMetrics) -> int:
     )
 
 
-FLOOR_HUG_RATIO = 0.82
+FLOOR_HUG_RATIO = 0.90
 
 
-def listing_hugs_floor(ask: Optional[float], collection_floor: Optional[float], *, ratio: float = FLOOR_HUG_RATIO) -> bool:
-    """Цена у флора коллекции — продавец знает рынок, это не лох."""
-    if ask is None or collection_floor is None or collection_floor <= 0 or ask <= 0:
+def listing_hugs_floor(ask: Optional[float], fair_value: Optional[float], *, ratio: float = FLOOR_HUG_RATIO) -> bool:
+    """Цена у последней продажи/оценки — шарит. Текущий флор маркета не сравниваем: он и есть ask."""
+    if ask is None or fair_value is None or fair_value <= 0 or ask <= 0:
         return False
-    return ask >= collection_floor * ratio
+    return ask >= fair_value * ratio
 
 
 def looks_like_reseller_bio(bio: str) -> bool:
@@ -363,8 +363,8 @@ class ProfileFilter:
         resale = [gift for gift in snapshot.unique_gifts if gift.on_resale]
         if len(resale) >= 2:
             found.append("несколько NFT на ресейле — флиппер")
-        if listing_hugs_floor(_listing_ask(snapshot), _collection_floor(snapshot)):
-            found.append("цена у флора — шарит за NFT")
+        if listing_hugs_floor(_listing_ask(snapshot), _fair_value(snapshot)):
+            found.append("цена у оценки — шарит за NFT")
         for gift in snapshot.unique_gifts:
             if gift.slug in listed:
                 continue
@@ -389,7 +389,7 @@ def _listing_ask(snapshot: ProfileSnapshot) -> Optional[float]:
     return None
 
 
-def _collection_floor(snapshot: ProfileSnapshot) -> Optional[float]:
+def _fair_value(snapshot: ProfileSnapshot) -> Optional[float]:
     gifts = snapshot.cheap_gifts or snapshot.unique_gifts
-    floors = [gift.telegram_floor_ton for gift in gifts if gift.telegram_floor_ton]
-    return min(floors) if floors else None
+    values = [gift.fair_value_ton for gift in gifts if gift.fair_value_ton]
+    return min(values) if values else None

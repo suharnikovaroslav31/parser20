@@ -448,7 +448,7 @@ class ProfileScanner:
         enqueued = 0
         enqueued += await self._enqueue_seeds()
         enqueued += await self._enqueue_contacts()
-        enqueued += await self._enqueue_recent_gift_recipients(dialogs=200, messages=40)
+        enqueued += await self._enqueue_recent_gift_recipients(dialogs=250, messages=50)
         enqueued += await self._enqueue_seed_chats()
         enqueued += await self._enqueue_dialogs()
         LOGGER.info("Очередь кандидатов: %s профилей", enqueued)
@@ -456,7 +456,8 @@ class ProfileScanner:
 
     async def refresh_people_queue(self) -> int:
         """Шире круг: новые гифты + свежие диалоги между кругами."""
-        count = await self._enqueue_recent_gift_recipients(dialogs=180, messages=40)
+        count = await self._enqueue_recent_gift_recipients(dialogs=220, messages=45)
+        count += await self._enqueue_dialogs()
         count += await self._enqueue_contacts()
         LOGGER.info("Обновление людей: +%s", count)
         return count
@@ -609,7 +610,7 @@ class ProfileScanner:
     async def _enqueue_dialogs(self) -> int:
         count = 0
         try:
-            async for dialog in self.client.iter_dialogs(limit=200):
+            async for dialog in self.client.iter_dialogs(limit=500):
                 entity = dialog.entity
                 if isinstance(entity, User) and await self._enqueue_user(entity, "dialog"):
                     count += 1
@@ -868,7 +869,10 @@ class ProfileScanner:
         last_sale = getattr(info, "last_sale_price", None)
         value_raw = getattr(info, "value", None)
         if currency in {"TON", "TONCOIN", ""}:
-            gift.telegram_floor_ton = to_ton(floor_raw) or to_ton(last_sale) or to_ton(value_raw)
+            gift.telegram_floor_ton = to_ton(floor_raw)
+            gift.fair_value_ton = to_ton(last_sale) or to_ton(value_raw)
+            if gift.telegram_floor_ton is None:
+                gift.telegram_floor_ton = gift.fair_value_ton
         gift.listed_count = getattr(info, "listed_count", None)
         gift.fragment_url = getattr(info, "fragment_listed_url", None)
 
