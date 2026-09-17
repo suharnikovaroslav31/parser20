@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260917-7"
+BUILD = "20260917-8"
 
 
 def setup_logging() -> None:
@@ -189,7 +189,7 @@ class AnalyticsApp:
                     len(snapshot.unique_gifts),
                     snapshot.min_floor_ton,
                 )
-                await asyncio.sleep(1.2)
+                await asyncio.sleep(0.4)
                 return
             LOGGER.error(
                 "MATCH user=%s, карточка в группу не ушла — лот повторю в следующем круге",

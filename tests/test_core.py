@@ -244,6 +244,10 @@ class FilterTests(unittest.TestCase):
         self.assertTrue(any("русск" in reason for reason in decision.reasons))
 
     def test_cyrillic_name_matches_without_lang(self) -> None:
+        from core.filters import name_has_cyrillic
+
+        self.assertTrue(name_has_cyrillic("Сергей", "Иванов"))
+        self.assertFalse(name_has_cyrillic("Dima", ""))
         snap = _snapshot(
             gifts=[_gift()],
             metrics=_metrics(lang_code=None, first_name="Сергей", last_name="Иванов"),
@@ -467,10 +471,13 @@ class NanotonTests(unittest.TestCase):
 
 class SearchDirectionTests(unittest.TestCase):
     def test_telegram_scans_new_not_floor(self) -> None:
-        from core.market import CHEAP_PAGES, NEW_PAGES
+        from core.market import CHEAP_PAGES, COLLECTIONS_PER_PASS, MAX_NOOB_COLLECTIONS, NEW_PAGES
 
         self.assertEqual(CHEAP_PAGES, 0)
-        self.assertGreaterEqual(NEW_PAGES, 10)
+        self.assertGreaterEqual(NEW_PAGES, 2)
+        self.assertLessEqual(NEW_PAGES, 4)
+        self.assertLess(COLLECTIONS_PER_PASS, MAX_NOOB_COLLECTIONS)
+        self.assertGreaterEqual(COLLECTIONS_PER_PASS, 40)
 
     def test_gift_action_prefers_recipient_peer(self) -> None:
         from core.parser import ProfileScanner

@@ -157,7 +157,7 @@ class Settings(BaseSettings):
     http_timeout_sec: float = Field(default=25.0, ge=5.0, validation_alias=AliasChoices("HTTP_TIMEOUT_SEC"))
     http_max_retries: int = Field(default=5, ge=1, le=12, validation_alias=AliasChoices("HTTP_MAX_RETRIES"))
     gift_page_size: int = Field(default=50, ge=1, le=100, validation_alias=AliasChoices("GIFT_PAGE_SIZE"))
-    market_poll_sec: int = Field(default=45, ge=15, le=600, validation_alias=AliasChoices("MARKET_POLL_SEC"))
+    market_poll_sec: int = Field(default=15, ge=15, le=600, validation_alias=AliasChoices("MARKET_POLL_SEC"))
     stars_usd: float = Field(default=0.013, ge=0.0, validation_alias=AliasChoices("STARS_USD"))
     filter_market_seller_age: bool = Field(
         default=False,

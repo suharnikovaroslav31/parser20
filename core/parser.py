@@ -293,7 +293,7 @@ class ProfileScanner:
         self.settings = settings
         self.storage = storage
         self.market = market
-        self._limiter = AsyncRateLimiter(settings.telegram_concurrency, min_interval=0.55)
+        self._limiter = AsyncRateLimiter(settings.telegram_concurrency, min_interval=0.28)
         self._flood = TelegramFloodControl(self._limiter)
         self._seen_at: dict[int, float] = {}
         self._me_id: Optional[int] = None
@@ -448,17 +448,16 @@ class ProfileScanner:
         enqueued = 0
         enqueued += await self._enqueue_seeds()
         enqueued += await self._enqueue_contacts()
-        enqueued += await self._enqueue_recent_gift_recipients(dialogs=400, messages=70)
+        enqueued += await self._enqueue_recent_gift_recipients(dialogs=70, messages=20)
         enqueued += await self._enqueue_seed_chats()
-        enqueued += await self._enqueue_dialogs()
+        enqueued += await self._enqueue_dialogs(limit=200)
         LOGGER.info("Очередь кандидатов: %s профилей", enqueued)
         return enqueued
 
     async def refresh_people_queue(self) -> int:
         """Шире круг: новые гифты + свежие диалоги между кругами."""
-        count = await self._enqueue_recent_gift_recipients(dialogs=300, messages=60)
-        count += await self._enqueue_dialogs()
-        count += await self._enqueue_contacts()
+        count = await self._enqueue_recent_gift_recipients(dialogs=40, messages=12)
+        count += await self._enqueue_dialogs(limit=80)
         LOGGER.info("Обновление людей: +%s", count)
         return count
 
@@ -607,10 +606,10 @@ class ProfileScanner:
         LOGGER.info("Недавние гифты в чатах: %s людей", count)
         return count
 
-    async def _enqueue_dialogs(self) -> int:
+    async def _enqueue_dialogs(self, limit: int = 200) -> int:
         count = 0
         try:
-            async for dialog in self.client.iter_dialogs(limit=800):
+            async for dialog in self.client.iter_dialogs(limit=limit):
                 entity = dialog.entity
                 if isinstance(entity, User) and await self._enqueue_user(entity, "dialog"):
                     count += 1
@@ -751,7 +750,7 @@ class ProfileScanner:
         regular: list[RegularGift] = []
         offset = ""
         pages = 0
-        max_pages = 6 if stop_after_unique is not None else 12
+        max_pages = 2 if stop_after_unique is not None else 8
         input_peer = await self._input_peer(user)
         supported = inspect.signature(GetSavedStarGiftsRequest).parameters
         include_hidden = "exclude_unsaved" in supported
@@ -859,6 +858,7 @@ class ProfileScanner:
         try:
             info = await self._flood.call(
                 lambda: self.client(GetUniqueStarGiftValueInfoRequest(slug=gift.slug)),
+                retries=2,
                 label=f"value:{gift.slug}",
             )
         except RPCError as exc:
@@ -880,9 +880,9 @@ class ProfileScanner:
         started = time.perf_counter()
         try:
             metrics = await self.fetch_metrics(user)
-            unique, regular = await self.fetch_saved_gifts(user, stop_after_unique=8)
+            unique, regular = await self.fetch_saved_gifts(user, stop_after_unique=4)
             metrics.gifts_fetched = True
-            for gift in unique:
+            for gift in unique[:2]:
                 await self._enrich_telegram_floor(gift)
             total_ton, min_floor, cheap = await self.market.estimate_portfolio(unique)
             ton_usd = await self.market.get_ton_usd()

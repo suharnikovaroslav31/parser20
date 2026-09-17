@@ -187,9 +187,12 @@ def listing_at_market_floor(ask: Optional[float], market_floor: Optional[float],
     return abs(ask - market_floor) / market_floor <= band
 
 
+def name_has_cyrillic(first_name: str = "", last_name: str = "", bio: str = "") -> bool:
+    return bool(_CYRILLIC.search(f"{first_name or ''} {last_name or ''} {bio or ''}"))
+
+
 def has_cyrillic_name(metrics: AccountMetrics) -> bool:
-    text = f"{metrics.first_name or ''} {metrics.last_name or ''} {metrics.bio or ''}"
-    return bool(_CYRILLIC.search(text))
+    return name_has_cyrillic(metrics.first_name, metrics.last_name, metrics.bio)
 
 
 def looks_like_reseller_bio(bio: str) -> bool:

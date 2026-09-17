@@ -25,7 +25,14 @@ except ImportError:
     GetUniqueStarGiftRequest = None  # type: ignore[misc,assignment]
 
 from config import Settings
-from core.filters import account_age_days, compute_activity_score, listing_at_market_floor, listing_hugs_floor
+from core.filters import (
+    account_age_days,
+    compute_activity_score,
+    listing_at_market_floor,
+    listing_hugs_floor,
+    looks_like_burner_name,
+    name_has_cyrillic,
+)
 from core.listings import ListingTracker
 from core.models import AccountMetrics, ProfileSnapshot, UniqueGift, utcnow
 from core.parser import ProfileScanner
@@ -33,8 +40,10 @@ from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
 CHEAP_PAGES = 0
-NEW_PAGES = 20
+NEW_PAGES = 2
 MAX_NOOB_COLLECTIONS = 400
+COLLECTIONS_PER_PASS = 70
+PEOPLE_PER_PASS = 50
 EXTERNAL_LIMIT = 25
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
@@ -180,6 +189,9 @@ class GiftMarketScanner:
         self._people_bootstrapped = False
         self._seller_cache: dict[int, tuple[AccountMetrics, list[UniqueGift], list]] = {}
         self._username_cache: dict[str, Optional[User]] = {}
+        self._catalog_offset = 0
+        self._collection_floor: dict[int, float] = {}
+        self._value_cache: dict[str, tuple[Optional[float], Optional[float]]] = {}
         self.stage = "idle"
 
     def _stopping(self) -> bool:
@@ -225,6 +237,8 @@ class GiftMarketScanner:
         self._skipped_smart = 0
         self._seller_cache = {}
         self._username_cache = {}
+        if len(self._value_cache) > 4000:
+            self._value_cache.clear()
         LOGGER.info(
             "Фильтры сейчас: цена %s–%s TON, NFT %s–%s, рейтинг %s–%s, возраст ≤%sд",
             self.live.floor_min_ton,
@@ -276,7 +290,7 @@ class GiftMarketScanner:
             self._people_bootstrapped = True
         else:
             await self.scanner.refresh_people_queue()
-        async for snapshot in self.scanner.drain_queue(limit=800):
+        async for snapshot in self.scanner.drain_queue(limit=PEOPLE_PER_PASS):
             if snapshot.unique_gifts:
                 yield snapshot
 
@@ -296,14 +310,22 @@ class GiftMarketScanner:
             resale_types = list(catalog)
         resale_types.sort(key=lambda item: int(getattr(item, "stars", 10**9) or 10**9))
         resale_types = resale_types[:MAX_NOOB_COLLECTIONS]
+        total = len(resale_types)
+        if not total:
+            LOGGER.warning("Каталог Telegram Gifts пустой")
+            return
+        start = self._catalog_offset % total
+        batch = [resale_types[(start + i) % total] for i in range(min(COLLECTIONS_PER_PASS, total))]
+        self._catalog_offset = (start + len(batch)) % total
         LOGGER.info(
-            "Каталог Telegram Gifts: %s типов, в обходе %s",
+            "Каталог Telegram Gifts: %s типов, этот круг %s шт. с %s, NEW %s стр.",
             len(catalog),
-            len(resale_types),
+            len(batch),
+            start + 1,
+            NEW_PAGES,
         )
         ton_usd = await self._ton_usd()
-        total = len(resale_types)
-        for index, base in enumerate(resale_types, start=1):
+        for index, base in enumerate(batch, start=1):
             if self._stopping():
                 return
             if self.scanner._flood.cooling:
@@ -313,8 +335,8 @@ class GiftMarketScanner:
             title = str(getattr(base, "title", "") or gift_id)
             if not gift_id:
                 continue
-            LOGGER.info("Telegram market %s/%s: %s", index, total, title)
-            self.stage = f"telegram {index}/{total} {title}"
+            LOGGER.info("Telegram market %s/%s: %s", index, len(batch), title)
+            self.stage = f"telegram {index}/{len(batch)} {title}"
             try:
                 async for snapshot in self._resale_collection(gift_id, title, ton_usd):
                     yield snapshot
@@ -366,6 +388,7 @@ class GiftMarketScanner:
                         sort_by_price=True if sort_by_price else None,
                     )
                 ),
+                retries=2,
                 label=f"resale:{gift_id}:{'price' if sort_by_price else 'new'}",
             )
             users = {
@@ -399,7 +422,7 @@ class GiftMarketScanner:
                     continue
                 try:
                     snapshot = await self._snapshot_from_telegram_lot(
-                        raw, users, price, ton_usd, source="tg_market"
+                        raw, users, price, ton_usd, source="tg_market", collection_id=gift_id
                     )
                 except (RPCError, asyncio.TimeoutError) as exc:
                     LOGGER.info("лот %s %s: %s", title, slug or extra, exc)
@@ -414,6 +437,28 @@ class GiftMarketScanner:
                 return
             offset = next_offset
 
+    async def _apply_floor(self, unique: UniqueGift, collection_id: int = 0) -> None:
+        slug = (unique.slug or "").strip()
+        cached = self._value_cache.get(slug) if slug else None
+        if cached is not None:
+            unique.telegram_floor_ton, unique.fair_value_ton = cached
+        else:
+            await self.scanner._enrich_telegram_floor(unique)
+            if slug:
+                self._value_cache[slug] = (unique.telegram_floor_ton, unique.fair_value_ton)
+        floor = unique.telegram_floor_ton
+        if floor and collection_id:
+            self._collection_floor[int(collection_id)] = floor
+
+    def _market_seller_is_flipper(self, user: Optional[User], *, source: str) -> bool:
+        if source != "tg_market" or user is None:
+            return False
+        first = user.first_name or ""
+        last = user.last_name or ""
+        if not name_has_cyrillic(first, last):
+            return True
+        return looks_like_burner_name(first, last)
+
     async def _snapshot_from_telegram_lot(
         self,
         raw: Any,
@@ -422,6 +467,7 @@ class GiftMarketScanner:
         ton_usd: float,
         *,
         source: str = "tg_market",
+        collection_id: int = 0,
     ) -> Optional[ProfileSnapshot]:
         started = time.perf_counter()
         unique, _regular = self.scanner._parse_saved_gift(raw)
@@ -436,21 +482,28 @@ class GiftMarketScanner:
         unique.on_resale = True
         unique.market_floor_ton = price
         unique.market_source = "telegram_resale" if source == "tg_market" else source
-        await self.scanner._enrich_telegram_floor(unique)
+        owner_id = _peer_user_id(getattr(raw, "owner_id", None))
+        unique.seller_id = owner_id
+        unique.seller_name = getattr(raw, "owner_name", None)
+        user = self._seller_from_users(owner_id, users)
+        if self._market_seller_is_flipper(user, source=source):
+            self._skipped_smart += 1
+            return None
+        known_floor = self._collection_floor.get(int(collection_id)) if collection_id else None
+        if listing_at_market_floor(price, known_floor):
+            self._skipped_smart += 1
+            return None
+        await self._apply_floor(unique, collection_id)
         if listing_at_market_floor(price, unique.telegram_floor_ton):
             self._skipped_smart += 1
             return None
         if listing_hugs_floor(price, unique.fair_value_ton):
             self._skipped_smart += 1
             return None
-        owner_id = _peer_user_id(getattr(raw, "owner_id", None))
-        unique.seller_id = owner_id
-        unique.seller_name = getattr(raw, "owner_name", None)
         cached = self._seller_cache.get(int(owner_id)) if owner_id else None
         if cached is not None:
             metrics, profile_uniques, regular = cached
         else:
-            user = self._seller_from_users(owner_id, users)
             profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
             metrics = await self._metrics_for_seller(user, owner_id, unique.seller_name)
             metrics.gifts_fetched = gifts_ok
@@ -909,7 +962,7 @@ class GiftMarketScanner:
         if user is None or user.bot or getattr(user, "deleted", False):
             return [], [], False
         try:
-            uniques, regular = await self.scanner.fetch_saved_gifts(user, stop_after_unique=8)
+            uniques, regular = await self.scanner.fetch_saved_gifts(user, stop_after_unique=4)
         except Exception as exc:
             LOGGER.info("gifts профиля %s: %s", getattr(user, "id", "?"), exc)
             return [], [], False

@@ -35,7 +35,7 @@ ORIGINAL_FILTERS: dict[str, Any] = {
     "require_russian": True,
     "filter_seller_age": False,
     "alert_cooldown_hours": 24,
-    "market_poll_sec": 45,
+    "market_poll_sec": 15,
 }
 
 
@@ -58,7 +58,7 @@ class LiveFilters:
     require_noob_profile: bool = True
     require_russian: bool = True
     alert_cooldown_hours: int = 24
-    market_poll_sec: int = 45
+    market_poll_sec: int = 15
     community_url: str = "https://t.me/GGsel_deal"
     schema_version: int = SCHEMA_VERSION
     path: Path = field(default_factory=lambda: DEFAULT_PATH, repr=False)
@@ -90,6 +90,8 @@ class LiveFilters:
         )
         if path.exists():
             live.load()
+        if int(live.market_poll_sec or 0) >= 40:
+            live.market_poll_sec = 15
         live.community_url = getattr(settings, "community_chat_url", None) or "https://t.me/GGsel_deal"
         live.save()
         return live
