@@ -231,7 +231,7 @@ class AnalyticsApp:
                 except asyncio.TimeoutError:
                     continue
                 continue
-            LOGGER.info("Старт прохода: получатели гифтов + NEW не у рынка")
+            LOGGER.info("Старт прохода: Telegram NEW, потом люди")
             self._pass_task = asyncio.create_task(self._one_pass(), name="market-pass")
             try:
                 await self._pass_task

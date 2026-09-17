@@ -40,10 +40,10 @@ from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
 CHEAP_PAGES = 0
-NEW_PAGES = 2
+NEW_PAGES = 1
 MAX_NOOB_COLLECTIONS = 400
-COLLECTIONS_PER_PASS = 70
-PEOPLE_PER_PASS = 50
+COLLECTIONS_PER_PASS = 120
+PEOPLE_PER_PASS = 40
 EXTERNAL_LIMIT = 25
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
@@ -254,25 +254,25 @@ class GiftMarketScanner:
                 LOGGER.error("Telegram нет связи — этот проход пропускаю")
                 return
             people_count = 0
+            async for snapshot in self._iter_source("telegram-resale", self._iter_telegram_resale()):
+                telegram_count += 1
+                yield snapshot
+            LOGGER.info(
+                "Telegram NEW: лотов %s, снимков %s, повтор %s, шарят %s",
+                self._tg_priced,
+                telegram_count,
+                self._skipped_known,
+                self._skipped_smart,
+            )
             async for snapshot in self._iter_source("people", self._iter_people()):
                 people_count += 1
                 yield snapshot
             LOGGER.info("Люди вокруг сессии: снимков %s", people_count)
             if people_count == 0:
                 LOGGER.warning(
-                    "Людей нет — у сканер-акка пустые чаты. Остаётся Telegram-ресейл. "
+                    "Людей нет — у сканер-акка пустые чаты. "
                     "Заведи акк в чаты, где дарят гифты."
                 )
-            async for snapshot in self._iter_source("telegram-resale", self._iter_telegram_resale()):
-                telegram_count += 1
-                yield snapshot
-            LOGGER.info(
-                "Telegram NEW не у рынка: лотов %s, снимков %s, повтор %s, шарят %s",
-                self._tg_priced,
-                telegram_count,
-                self._skipped_known,
-                self._skipped_smart,
-            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -283,6 +283,11 @@ class GiftMarketScanner:
             except Exception:
                 self.tracker.discard_partial()
             self.stage = "idle"
+
+    async def _drain_ready_people(self, *, limit: int) -> AsyncIterator[ProfileSnapshot]:
+        async for snapshot in self.scanner.drain_queue(limit=limit):
+            if snapshot.unique_gifts:
+                yield snapshot
 
     async def _iter_people(self) -> AsyncIterator[ProfileSnapshot]:
         if not self._people_bootstrapped:
@@ -308,7 +313,12 @@ class GiftMarketScanner:
         ]
         if not resale_types:
             resale_types = list(catalog)
-        resale_types.sort(key=lambda item: int(getattr(item, "stars", 10**9) or 10**9))
+        resale_types.sort(
+            key=lambda item: (
+                -int(getattr(item, "availability_resale", 0) or 0),
+                int(getattr(item, "stars", 10**9) or 10**9),
+            )
+        )
         resale_types = resale_types[:MAX_NOOB_COLLECTIONS]
         total = len(resale_types)
         if not total:
@@ -344,6 +354,9 @@ class GiftMarketScanner:
                 raise
             except Exception as exc:
                 LOGGER.warning("resale %s (%s): %s", title, gift_id, exc)
+            if index % 8 == 0:
+                async for snapshot in self._drain_ready_people(limit=10):
+                    yield snapshot
 
     async def _gift_catalog(self) -> list[Any]:
         try:

@@ -26,9 +26,10 @@ class RateLimitedError(RuntimeError):
 class AsyncRateLimiter:
     """Ограничивает параллелизм и добавляет джиттер между вызовами."""
 
-    def __init__(self, concurrency: int, min_interval: float = 0.05) -> None:
+    def __init__(self, concurrency: int, min_interval: float = 0.05, max_jitter: float = 0.04) -> None:
         self._semaphore = asyncio.Semaphore(max(1, concurrency))
         self._min_interval = min_interval
+        self._max_jitter = max(0.0, max_jitter)
         self._lock = asyncio.Lock()
         self._next_ts = 0.0
 
@@ -39,7 +40,7 @@ class AsyncRateLimiter:
             wait_for = self._next_ts - now
             if wait_for > 0:
                 await asyncio.sleep(wait_for)
-            jitter = random.uniform(0.0, self._min_interval)
+            jitter = random.uniform(0.0, self._max_jitter) if self._max_jitter else 0.0
             self._next_ts = loop.time() + self._min_interval + jitter
 
     async def run(self, factory: Callable[[], Awaitable[T]]) -> T:

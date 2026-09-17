@@ -348,13 +348,20 @@ class FilterTests(unittest.TestCase):
 
     def test_skip_listing_near_last_sale(self) -> None:
         snap = _snapshot(
-            gifts=[_gift(price=7.0, collection_floor=8.0)],
+            gifts=[_gift(price=7.5, collection_floor=8.0)],
             metrics=_metrics(),
-            price=7.0,
+            price=7.5,
         )
         decision = self.flt.evaluate(snap)
         self.assertFalse(decision.matched)
         self.assertTrue(any("оценк" in reason or "перекупа" in reason for reason in decision.reasons))
+
+    def test_small_undercut_still_matches(self) -> None:
+        gift = _gift(price=4.7, collection_floor=5.0)
+        gift.fair_value_ton = None
+        snap = _snapshot(gifts=[gift], metrics=_metrics(), price=4.7)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
 
     def test_no_fair_value_does_not_skip(self) -> None:
         gift = _gift(price=2.0, collection_floor=7.0)
@@ -474,10 +481,10 @@ class SearchDirectionTests(unittest.TestCase):
         from core.market import CHEAP_PAGES, COLLECTIONS_PER_PASS, MAX_NOOB_COLLECTIONS, NEW_PAGES
 
         self.assertEqual(CHEAP_PAGES, 0)
-        self.assertGreaterEqual(NEW_PAGES, 2)
-        self.assertLessEqual(NEW_PAGES, 4)
+        self.assertGreaterEqual(NEW_PAGES, 1)
+        self.assertLessEqual(NEW_PAGES, 2)
         self.assertLess(COLLECTIONS_PER_PASS, MAX_NOOB_COLLECTIONS)
-        self.assertGreaterEqual(COLLECTIONS_PER_PASS, 40)
+        self.assertGreaterEqual(COLLECTIONS_PER_PASS, 80)
 
     def test_gift_action_prefers_recipient_peer(self) -> None:
         from core.parser import ProfileScanner
@@ -513,7 +520,7 @@ class BuildTests(unittest.TestCase):
         from core.runtime import BUILD
 
         self.assertTrue(BUILD.startswith("20260917-"))
-        self.assertGreaterEqual(BUILD, "20260917-9")
+        self.assertGreaterEqual(BUILD, "20260917-10")
 
 
 if __name__ == "__main__":

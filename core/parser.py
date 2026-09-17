@@ -293,7 +293,7 @@ class ProfileScanner:
         self.settings = settings
         self.storage = storage
         self.market = market
-        self._limiter = AsyncRateLimiter(settings.telegram_concurrency, min_interval=0.28)
+        self._limiter = AsyncRateLimiter(settings.telegram_concurrency, min_interval=0.1, max_jitter=0.03)
         self._flood = TelegramFloodControl(self._limiter)
         self._seen_at: dict[int, float] = {}
         self._me_id: Optional[int] = None
@@ -448,16 +448,14 @@ class ProfileScanner:
         enqueued = 0
         enqueued += await self._enqueue_seeds()
         enqueued += await self._enqueue_contacts()
-        enqueued += await self._enqueue_recent_gift_recipients(dialogs=70, messages=20)
+        enqueued += await self._enqueue_recent_gift_recipients(dialogs=50, messages=15)
         enqueued += await self._enqueue_seed_chats()
-        enqueued += await self._enqueue_dialogs(limit=200)
         LOGGER.info("Очередь кандидатов: %s профилей", enqueued)
         return enqueued
 
     async def refresh_people_queue(self) -> int:
         """Шире круг: новые гифты + свежие диалоги между кругами."""
-        count = await self._enqueue_recent_gift_recipients(dialogs=40, messages=12)
-        count += await self._enqueue_dialogs(limit=80)
+        count = await self._enqueue_recent_gift_recipients(dialogs=30, messages=10)
         LOGGER.info("Обновление людей: +%s", count)
         return count
 
@@ -880,6 +878,8 @@ class ProfileScanner:
         started = time.perf_counter()
         try:
             metrics = await self.fetch_metrics(user)
+            if metrics.stargifts_count == 0:
+                return None
             unique, regular = await self.fetch_saved_gifts(user, stop_after_unique=4)
             metrics.gifts_fetched = True
             for gift in unique[:2]:

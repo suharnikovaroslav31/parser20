@@ -169,8 +169,8 @@ def profile_richness(metrics: AccountMetrics) -> int:
     )
 
 
-FLOOR_HUG_RATIO = 0.75
-MARKET_FLOOR_BAND = 0.08
+FLOOR_HUG_RATIO = 0.92
+MARKET_FLOOR_BAND = 0.04
 
 
 def listing_hugs_floor(ask: Optional[float], fair_value: Optional[float], *, ratio: float = FLOOR_HUG_RATIO) -> bool:
