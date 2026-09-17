@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260916-9"
+BUILD = "20260916-10"
 
 
 def setup_logging() -> None:
@@ -272,6 +272,8 @@ class AnalyticsApp:
                     "ok" if connected else "нет",
                     "да" if self._pass_task is not None and not self._pass_task.done() else "нет",
                 )
+                if connected:
+                    self.scanner.persist_session()
 
     async def _watchdog(self) -> None:
         last = ""

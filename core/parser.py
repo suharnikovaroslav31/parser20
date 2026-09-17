@@ -19,6 +19,7 @@ import inspect
 import logging
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any, Optional
 
 from telethon import TelegramClient, events
@@ -53,6 +54,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.parser")
+SESSION_FILE = Path("data/mtproto.session.txt")
 
 try:
     from telethon.tl.types import MessageActionStarGiftUnique
@@ -70,6 +72,20 @@ def _user_display(user: User) -> str:
     if user.username:
         return f"{name} @{user.username}".strip()
     return name or str(user.id)
+
+
+def _read_session_file() -> str:
+    try:
+        return SESSION_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _write_session_file(raw: str) -> None:
+    if not raw:
+        return
+    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SESSION_FILE.write_text(raw, encoding="utf-8")
 
 
 class TelegramFloodControl:
@@ -139,6 +155,13 @@ class TelegramFloodControl:
                 await asyncio.wait_for(client.connect(), timeout=12)
             except Exception as exc:
                 LOGGER.warning("reconnect не удался: %s", exc)
+                return
+            try:
+                if await asyncio.wait_for(client.is_user_authorized(), timeout=8):
+                    raw = StringSession.save(client.session)
+                    _write_session_file(raw)
+            except Exception:
+                pass
 
     async def _await_rpc(self, factory, label: str) -> Any:
         # Без shield: иначе зависший RPC держит слот семафора часами, сканер встаёт.
@@ -221,7 +244,7 @@ class ProfileScanner:
         self._seen_at: dict[int, float] = {}
         self._me_id: Optional[int] = None
         self._queue: asyncio.Queue[tuple[User, str]] = asyncio.Queue()
-        raw = self.settings.telegram_session.strip()
+        raw = _read_session_file() or self.settings.telegram_session.strip()
         if raw:
             try:
                 session = StringSession(raw)
@@ -234,13 +257,15 @@ class ProfileScanner:
             session,
             settings.api_id,
             settings.api_hash,
-            device_model="TG-Gifts Analytics",
+            device_model="Desktop",
             system_version="Windows 10",
-            app_version="1.0.0",
+            app_version="4.16.30 x64",
+            lang_code="ru",
+            system_lang_code="ru",
             timeout=15,
-            request_retries=1,
-            connection_retries=2,
-            retry_delay=1,
+            request_retries=2,
+            connection_retries=8,
+            retry_delay=2,
             auto_reconnect=True,
             flood_sleep_threshold=0,
         )
@@ -252,6 +277,7 @@ class ProfileScanner:
         me = await self.client.get_me()
         LOGGER.info("Сессия сохранена для %s id=%s", _user_display(me), me.id)
         LOGGER.info("TELEGRAM_SESSION=%s", StringSession.save(self.client.session))
+        self.persist_session()
 
     async def start(self) -> None:
         session_len = len(self.settings.telegram_session.strip())
@@ -277,10 +303,23 @@ class ProfileScanner:
             )
         me = await asyncio.wait_for(self.client.get_me(), timeout=15)
         self._me_id = int(me.id)
+        self.persist_session()
         LOGGER.info("MTProto клиент вошёл как %s id=%s", _user_display(me), me.id)
         self._register_live_handlers()
 
+    def persist_session(self) -> None:
+        """Пишем актуальный auth key на диск — после рестарта хоста строка из env может быть старой."""
+        try:
+            raw = StringSession.save(self.client.session)
+        except Exception:
+            return
+        try:
+            _write_session_file(raw)
+        except OSError as exc:
+            LOGGER.warning("не сохранил сессию на диск: %s", exc)
+
     async def close(self) -> None:
+        self.persist_session()
         if self.client.is_connected():
             await self.client.disconnect()
 

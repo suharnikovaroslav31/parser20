@@ -114,38 +114,30 @@ def _claimer_label(user) -> str:
     return f"{name} · id {user.id}"
 
 
-def claimed_keyboard(nft_link: str) -> Optional[InlineKeyboardMarkup]:
-    url = _http_url(nft_link)
-    if not url:
-        return None
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Открыть NFT", url=url, **kb_icon("link"))]]
-    )
+def claimed_notice(claimed_by, lot: Optional[ClaimLot] = None) -> str:
+    who = _esc(_claimer_label(claimed_by)) if claimed_by is not None else "уже занят"
+    lines = [f"{e('check')} <b>Лот занят</b>", f"{e('user')} {who}"]
+    if lot is not None:
+        num = f" #{lot.number}" if lot.number is not None else ""
+        title = f"{_esc(lot.title)}{num}".strip()
+        if title:
+            lines.insert(1, f"{e('gift')} {title}")
+    return "\n".join(lines)
 
 
 async def _mark_group_claimed(call: CallbackQuery, lot: ClaimLot, claimed_by) -> None:
-    """Карточка остаётся в группе с пометкой, кто занял — не удаляем."""
+    """Карточка MATCH пропадает, остаётся только кто занял."""
     message = call.message
     if not isinstance(message, Message):
         return
-    who = _esc(_claimer_label(claimed_by))
-    stamp = f"{e('check')} <b>Занял</b> {who}"
-    original = (getattr(message, "html_text", None) or message.text or "").strip()
-    if original and "Занял" not in original and "Лот занят" not in original:
-        text = f"{stamp}\n\n{original}"
-    elif original:
-        text = original
-    else:
-        num = f" #{lot.number}" if lot.number is not None else ""
-        text = f"{stamp}\n{e('gift')} <b>{_esc(lot.title)}{num}</b>"
-    markup = claimed_keyboard(lot.nft_link)
+    text = claimed_notice(claimed_by, lot)
     try:
-        await message.edit_text(text, reply_markup=markup, disable_web_page_preview=True)
+        await message.edit_text(text, reply_markup=None, disable_web_page_preview=True)
         return
     except TelegramBadRequest as exc:
         LOGGER.warning("не обновил карточку (%s)", exc)
     try:
-        await message.reply(stamp, disable_web_page_preview=True)
+        await message.reply(text, disable_web_page_preview=True)
     except (TelegramBadRequest, TelegramForbiddenError) as exc:
         LOGGER.warning("не написал что лот занят: %s", exc)
 
@@ -154,10 +146,14 @@ async def _mark_already_taken(call: CallbackQuery) -> None:
     message = call.message
     if not isinstance(message, Message):
         return
+    text = f"{e('check')} <b>Лот занят</b>"
     try:
-        await message.edit_reply_markup(reply_markup=None)
+        await message.edit_text(text, reply_markup=None, disable_web_page_preview=True)
     except (TelegramBadRequest, TelegramForbiddenError):
-        pass
+        try:
+            await message.edit_reply_markup(reply_markup=None)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass
 
 
 def setup_claims(store: ClaimStore) -> Router:
