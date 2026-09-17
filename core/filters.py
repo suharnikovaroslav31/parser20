@@ -169,14 +169,27 @@ def profile_richness(metrics: AccountMetrics) -> int:
     )
 
 
-FLOOR_HUG_RATIO = 0.90
+FLOOR_HUG_RATIO = 0.75
+MARKET_FLOOR_BAND = 0.08
 
 
 def listing_hugs_floor(ask: Optional[float], fair_value: Optional[float], *, ratio: float = FLOOR_HUG_RATIO) -> bool:
-    """Цена у последней продажи/оценки — шарит. Текущий флор маркета не сравниваем: он и есть ask."""
+    """Цена близко к последней продаже — знает рынок."""
     if ask is None or fair_value is None or fair_value <= 0 or ask <= 0:
         return False
     return ask >= fair_value * ratio
+
+
+def listing_at_market_floor(ask: Optional[float], market_floor: Optional[float], *, band: float = MARKET_FLOOR_BAND) -> bool:
+    """Листинг у текущего флора Telegram — это перекуп, не лох."""
+    if ask is None or market_floor is None or market_floor <= 0 or ask <= 0:
+        return False
+    return abs(ask - market_floor) / market_floor <= band
+
+
+def has_cyrillic_name(metrics: AccountMetrics) -> bool:
+    text = f"{metrics.first_name or ''} {metrics.last_name or ''} {metrics.bio or ''}"
+    return bool(_CYRILLIC.search(text))
 
 
 def looks_like_reseller_bio(bio: str) -> bool:
@@ -344,15 +357,20 @@ class ProfileFilter:
         if total_gifts is not None and total_gifts >= 8 and total_gifts > shown + 3:
             found.append(f"гифтов {total_gifts} при витрине {shown} — прячут коллекцию")
         if snapshot.source in _MARKET_SOURCES:
-            age = metrics.account_age_days
-            shell = looks_like_shell_profile(metrics)
-            burner = looks_like_burner_name(metrics.first_name, metrics.last_name)
-            if shell and age is not None and age > 120:
-                found.append("пустой старый акк на маркете — витрина перекупа")
-            elif shell and metrics.is_premium:
-                found.append("Premium-пустышка на маркете")
-            elif burner and (shell or not metrics.username):
+            if looks_like_shell_profile(metrics):
+                found.append("пустой акк на маркете — альт перекупа")
+            if not has_cyrillic_name(metrics):
+                found.append("на маркете без кириллицы — не мамонт")
+            if looks_like_burner_name(metrics.first_name, metrics.last_name):
                 found.append("рандомное имя на маркете — альт перекупа")
+            visible_nfts = [gift for gift in snapshot.unique_gifts if not gift.unsaved]
+            if len(visible_nfts) > 1:
+                found.append("больше одного NFT на маркете — уже шарит")
+            ask = _listing_ask(snapshot)
+            floors = [gift.telegram_floor_ton for gift in (snapshot.cheap_gifts or snapshot.unique_gifts) if gift.telegram_floor_ton]
+            market_floor = min(floors) if floors else None
+            if listing_at_market_floor(ask, market_floor):
+                found.append("цена рынка — шарит за NFT")
         listed = {gift.slug for gift in snapshot.cheap_gifts if gift.slug}
         richness = profile_richness(metrics)
         if live.max_activity_score > 0 and richness > live.max_activity_score:

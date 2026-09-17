@@ -25,16 +25,16 @@ except ImportError:
     GetUniqueStarGiftRequest = None  # type: ignore[misc,assignment]
 
 from config import Settings
-from core.filters import account_age_days, compute_activity_score, listing_hugs_floor
+from core.filters import account_age_days, compute_activity_score, listing_at_market_floor, listing_hugs_floor
 from core.listings import ListingTracker
 from core.models import AccountMetrics, ProfileSnapshot, UniqueGift, utcnow
 from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
-CHEAP_PAGES = 5
-NEW_PAGES = 12
-MAX_NOOB_COLLECTIONS = 250
+CHEAP_PAGES = 0
+NEW_PAGES = 20
+MAX_NOOB_COLLECTIONS = 400
 EXTERNAL_LIMIT = 25
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
@@ -253,7 +253,7 @@ class GiftMarketScanner:
                 telegram_count += 1
                 yield snapshot
             LOGGER.info(
-                "Telegram NEW ниже флора: лотов %s, снимков %s, повтор %s, шарят за NFT %s",
+                "Telegram NEW не у рынка: лотов %s, снимков %s, повтор %s, шарят %s",
                 self._tg_priced,
                 telegram_count,
                 self._skipped_known,
@@ -276,7 +276,7 @@ class GiftMarketScanner:
             self._people_bootstrapped = True
         else:
             await self.scanner.refresh_people_queue()
-        async for snapshot in self.scanner.drain_queue(limit=600):
+        async for snapshot in self.scanner.drain_queue(limit=800):
             if snapshot.unique_gifts:
                 yield snapshot
 
@@ -343,9 +343,6 @@ class GiftMarketScanner:
     ) -> AsyncIterator[ProfileSnapshot]:
         async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=False, max_pages=NEW_PAGES):
             yield snapshot
-        if CHEAP_PAGES:
-            async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=True, max_pages=CHEAP_PAGES):
-                yield snapshot
 
     async def _resale_pages(
         self,
@@ -440,6 +437,9 @@ class GiftMarketScanner:
         unique.market_floor_ton = price
         unique.market_source = "telegram_resale" if source == "tg_market" else source
         await self.scanner._enrich_telegram_floor(unique)
+        if listing_at_market_floor(price, unique.telegram_floor_ton):
+            self._skipped_smart += 1
+            return None
         if listing_hugs_floor(price, unique.fair_value_ton):
             self._skipped_smart += 1
             return None

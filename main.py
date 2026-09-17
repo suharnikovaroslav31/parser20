@@ -25,7 +25,7 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient
 
 LOGGER = logging.getLogger("tg_gifts")
-BUILD = "20260917-6"
+BUILD = "20260917-7"
 
 
 def setup_logging() -> None:
@@ -231,7 +231,7 @@ class AnalyticsApp:
                 except asyncio.TimeoutError:
                     continue
                 continue
-            LOGGER.info("Старт прохода: гифты + NEW/cheap ниже оценки")
+            LOGGER.info("Старт прохода: получатели гифтов + NEW не у рынка")
             self._pass_task = asyncio.create_task(self._one_pass(), name="market-pass")
             try:
                 await self._pass_task

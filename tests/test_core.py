@@ -18,7 +18,7 @@ def _metrics(**kwargs) -> AccountMetrics:
     base = dict(
         user_id=8_800_000_000,
         username="seller",
-        first_name="A",
+        first_name="Иван",
         last_name="",
         is_premium=False,
         is_verified=False,
@@ -119,6 +119,7 @@ class FilterTests(unittest.TestCase):
         extra.on_resale = False
         gifts = [_gift("A-1"), extra]
         snap = _snapshot(gifts=gifts, metrics=_metrics(), price=2.0)
+        snap.source = "recent_gift_peer"
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
@@ -228,6 +229,7 @@ class FilterTests(unittest.TestCase):
             metrics=_metrics(username=None, has_photo=False, bio=""),
             price=2.0,
         )
+        snap.source = "recent_gift_peer"
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
@@ -256,6 +258,7 @@ class FilterTests(unittest.TestCase):
             metrics=_metrics(lang_code=None, first_name="Dima", last_name=""),
             price=2.0,
         )
+        snap.source = "recent_gift_peer"
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
@@ -308,7 +311,7 @@ class FilterTests(unittest.TestCase):
         self.assertFalse(decision.matched)
         self.assertTrue(any("альт" in reason for reason in decision.reasons))
 
-    def test_young_empty_market_noob_matches(self) -> None:
+    def test_young_empty_market_shell_skips(self) -> None:
         snap = _snapshot(
             gifts=[_gift()],
             metrics=_metrics(username=None, has_photo=False, bio="", first_name="Маша", account_age_days=20),
@@ -316,20 +319,41 @@ class FilterTests(unittest.TestCase):
         )
         snap.source = "tg_market"
         decision = self.flt.evaluate(snap)
-        self.assertTrue(decision.matched, decision.reasons)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("пустой" in reason for reason in decision.reasons))
 
-    def test_skip_listing_at_collection_floor(self) -> None:
+    def test_skip_listing_at_current_market_floor(self) -> None:
+        gift = _gift(price=5.0, collection_floor=9.0)
+        gift.telegram_floor_ton = 5.0
+        gift.fair_value_ton = None
+        snap = _snapshot(gifts=[gift], metrics=_metrics(), price=5.0)
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("рынка" in reason for reason in decision.reasons))
+
+    def test_skip_market_latin_name(self) -> None:
         snap = _snapshot(
-            gifts=[_gift(price=4.8, collection_floor=5.0)],
+            gifts=[_gift()],
+            metrics=_metrics(lang_code="ru", first_name="Dima", last_name=""),
+            price=2.0,
+        )
+        snap.source = "tg_market"
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("кириллиц" in reason for reason in decision.reasons))
+
+    def test_skip_listing_near_last_sale(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift(price=7.0, collection_floor=8.0)],
             metrics=_metrics(),
-            price=4.8,
+            price=7.0,
         )
         decision = self.flt.evaluate(snap)
         self.assertFalse(decision.matched)
-        self.assertTrue(any("оценк" in reason for reason in decision.reasons))
+        self.assertTrue(any("оценк" in reason or "перекупа" in reason for reason in decision.reasons))
 
     def test_no_fair_value_does_not_skip(self) -> None:
-        gift = _gift(price=2.0, collection_floor=2.0)
+        gift = _gift(price=2.0, collection_floor=7.0)
         gift.fair_value_ton = None
         snap = _snapshot(gifts=[gift], metrics=_metrics(), price=2.0)
         decision = self.flt.evaluate(snap)
@@ -442,11 +466,11 @@ class NanotonTests(unittest.TestCase):
 
 
 class SearchDirectionTests(unittest.TestCase):
-    def test_telegram_scans_new_and_cheap(self) -> None:
+    def test_telegram_scans_new_not_floor(self) -> None:
         from core.market import CHEAP_PAGES, NEW_PAGES
 
-        self.assertGreaterEqual(CHEAP_PAGES, 3)
-        self.assertGreaterEqual(NEW_PAGES, CHEAP_PAGES)
+        self.assertEqual(CHEAP_PAGES, 0)
+        self.assertGreaterEqual(NEW_PAGES, 10)
 
     def test_gift_action_prefers_recipient_peer(self) -> None:
         from core.parser import ProfileScanner
