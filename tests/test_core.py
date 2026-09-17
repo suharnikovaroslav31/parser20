@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Optional
 from types import SimpleNamespace
 
 from core.filters import ProfileFilter
@@ -40,14 +41,16 @@ def _metrics(**kwargs) -> AccountMetrics:
     return AccountMetrics(**base)
 
 
-def _gift(slug: str = "PlushPepe-1", price: float = 2.0, *, unsaved: bool = False) -> UniqueGift:
+def _gift(slug: str = "PlushPepe-1", price: float = 2.0, *, unsaved: bool = False, collection_floor: Optional[float] = None) -> UniqueGift:
+    ask = price
+    floor = collection_floor if collection_floor is not None else (price * 3.0 if price else None)
     return UniqueGift(
         slug=slug,
         title="Plush Pepe",
         number=1,
         on_resale=True,
-        telegram_floor_ton=price,
-        market_floor_ton=price,
+        telegram_floor_ton=floor,
+        market_floor_ton=ask,
         market_source="telegram_resale",
         unsaved=unsaved,
     )
@@ -314,6 +317,25 @@ class FilterTests(unittest.TestCase):
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
+    def test_skip_listing_at_collection_floor(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift(price=4.8, collection_floor=5.0)],
+            metrics=_metrics(),
+            price=4.8,
+        )
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("флора" in reason for reason in decision.reasons))
+
+    def test_unlisted_profile_nft_still_matches(self) -> None:
+        gift = _gift(price=2.0, collection_floor=2.0)
+        gift.on_resale = False
+        gift.market_floor_ton = None
+        snap = _snapshot(gifts=[gift], metrics=_metrics(), price=2.0)
+        snap.source = "recent_gift_peer"
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
 
 class FilterSchemaTests(unittest.TestCase):
     def test_schema2_restores_original_filters(self) -> None:
@@ -412,11 +434,11 @@ class NanotonTests(unittest.TestCase):
 
 
 class SearchDirectionTests(unittest.TestCase):
-    def test_telegram_scans_new_then_cheap(self) -> None:
+    def test_telegram_scans_new_below_floor_only(self) -> None:
         from core.market import CHEAP_PAGES, NEW_PAGES
 
-        self.assertGreaterEqual(NEW_PAGES, CHEAP_PAGES)
-        self.assertGreaterEqual(CHEAP_PAGES, 1)
+        self.assertEqual(CHEAP_PAGES, 0)
+        self.assertGreaterEqual(NEW_PAGES, 4)
 
     def test_gift_action_prefers_recipient_peer(self) -> None:
         from core.parser import ProfileScanner

@@ -448,7 +448,7 @@ class ProfileScanner:
         enqueued = 0
         enqueued += await self._enqueue_seeds()
         enqueued += await self._enqueue_contacts()
-        enqueued += await self._enqueue_recent_gift_recipients(dialogs=150, messages=35)
+        enqueued += await self._enqueue_recent_gift_recipients(dialogs=200, messages=40)
         enqueued += await self._enqueue_seed_chats()
         enqueued += await self._enqueue_dialogs()
         LOGGER.info("Очередь кандидатов: %s профилей", enqueued)
@@ -456,8 +456,7 @@ class ProfileScanner:
 
     async def refresh_people_queue(self) -> int:
         """Шире круг: новые гифты + свежие диалоги между кругами."""
-        count = await self._enqueue_recent_gift_recipients(dialogs=100, messages=28)
-        count += await self._enqueue_dialogs()
+        count = await self._enqueue_recent_gift_recipients(dialogs=180, messages=40)
         count += await self._enqueue_contacts()
         LOGGER.info("Обновление людей: +%s", count)
         return count
@@ -610,7 +609,7 @@ class ProfileScanner:
     async def _enqueue_dialogs(self) -> int:
         count = 0
         try:
-            async for dialog in self.client.iter_dialogs(limit=600):
+            async for dialog in self.client.iter_dialogs(limit=200):
                 entity = dialog.entity
                 if isinstance(entity, User) and await self._enqueue_user(entity, "dialog"):
                     count += 1

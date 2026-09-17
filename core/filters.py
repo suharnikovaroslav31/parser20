@@ -1,6 +1,6 @@
 """
-Фильтры: мамонт/новичок = ур.1 и 1–2 видимых дешёвых NFT.
-Пустышки на маркете и спрятанная коллекция — это перекупы, не лохи.
+Фильтры: мамонт = не шарит за NFT.
+Режем цену у флора, скрытую витрину и маркет-пустышки.
 """
 
 from __future__ import annotations
@@ -167,6 +167,16 @@ def profile_richness(metrics: AccountMetrics) -> int:
         unique_gift_count=0,
         public_channel_count=metrics.public_channel_count,
     )
+
+
+FLOOR_HUG_RATIO = 0.82
+
+
+def listing_hugs_floor(ask: Optional[float], collection_floor: Optional[float], *, ratio: float = FLOOR_HUG_RATIO) -> bool:
+    """Цена у флора коллекции — продавец знает рынок, это не лох."""
+    if ask is None or collection_floor is None or collection_floor <= 0 or ask <= 0:
+        return False
+    return ask >= collection_floor * ratio
 
 
 def looks_like_reseller_bio(bio: str) -> bool:
@@ -353,6 +363,8 @@ class ProfileFilter:
         resale = [gift for gift in snapshot.unique_gifts if gift.on_resale]
         if len(resale) >= 2:
             found.append("несколько NFT на ресейле — флиппер")
+        if listing_hugs_floor(_listing_ask(snapshot), _collection_floor(snapshot)):
+            found.append("цена у флора — шарит за NFT")
         for gift in snapshot.unique_gifts:
             if gift.slug in listed:
                 continue
@@ -368,3 +380,16 @@ class ProfileFilter:
         if not priced:
             return None
         return min(priced, key=lambda gift: gift.best_floor_ton or 0.0)
+
+
+def _listing_ask(snapshot: ProfileSnapshot) -> Optional[float]:
+    for gift in snapshot.cheap_gifts or snapshot.unique_gifts:
+        if gift.on_resale and gift.market_floor_ton is not None:
+            return gift.market_floor_ton
+    return None
+
+
+def _collection_floor(snapshot: ProfileSnapshot) -> Optional[float]:
+    gifts = snapshot.cheap_gifts or snapshot.unique_gifts
+    floors = [gift.telegram_floor_ton for gift in gifts if gift.telegram_floor_ton]
+    return min(floors) if floors else None
