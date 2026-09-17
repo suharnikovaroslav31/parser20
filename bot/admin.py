@@ -68,6 +68,7 @@ def _kb(live: LiveFilters) -> InlineKeyboardMarkup:
         ],
         [_btn(f"Рейтинг обязателен: {rating_req}", "tgl:rating", "star")],
         [_btn(f"Лох-профиль: {'да' if live.require_noob_profile else 'нет'}", "tgl:noob", "user")],
+        [_btn(f"Только русские: {'да' if live.require_russian else 'нет'}", "tgl:russian", "user")],
         [
             _btn(f"Возраст дн. {age}", "set:max_account_age_days", "chart"),
             _btn(f"Premium {prem}", "cycle:premium", "spark"),
@@ -193,6 +194,13 @@ def setup_admin(live: LiveFilters) -> Router:
     async def toggle_noob(call: CallbackQuery) -> None:
         live.update(require_noob_profile=not live.require_noob_profile)
         await call.answer("Лох-профиль " + ("вкл" if live.require_noob_profile else "выкл"))
+        if isinstance(call.message, Message):
+            await _send_menu(call.message, live, edit=True)
+
+    @router.callback_query(F.data == "tgl:russian", IsAdmin())
+    async def toggle_russian(call: CallbackQuery) -> None:
+        live.update(require_russian=not live.require_russian)
+        await call.answer("Только русские " + ("вкл" if live.require_russian else "выкл"))
         if isinstance(call.message, Message):
             await _send_menu(call.message, live, edit=True)
 

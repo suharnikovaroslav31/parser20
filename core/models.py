@@ -167,6 +167,7 @@ class AccountMetrics:
     stars_fetched: bool = False
     gifts_fetched: bool = False
     stargifts_count: Optional[int] = None
+    lang_code: Optional[str] = None
 
     @property
     def display_name(self) -> str:

@@ -1,0 +1,14 @@
+---
+description: After finishing requested code changes, commit and push to origin main immediately.
+alwaysApply: true
+---
+
+# Always push
+
+When a code change for this repo is done, do not wait for the user to say «пуш».
+
+- Commit the relevant files with a short message in the existing style.
+- Never commit `.env`, session strings, `data/mtproto*`, secrets, `__pycache__`, or `_tmp_db.py`.
+- Push to `origin` on the current branch (`main` unless the work is already on another branch).
+- Do not force-push.
+- After push, tell the user the commit, BUILD id, and that the host needs Rebuild.

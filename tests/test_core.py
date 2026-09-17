@@ -34,6 +34,7 @@ def _metrics(**kwargs) -> AccountMetrics:
         stars_fetched=True,
         gifts_fetched=True,
         stargifts_count=None,
+        lang_code="ru",
     )
     base.update(kwargs)
     return AccountMetrics(**base)
@@ -105,6 +106,7 @@ class FilterTests(unittest.TestCase):
             max_activity_score=55,
             max_regular_gifts=0,
             require_noob_profile=True,
+            require_russian=True,
         )
         self.flt = ProfileFilter(self.live)
 
@@ -225,6 +227,25 @@ class FilterTests(unittest.TestCase):
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
+    def test_skip_english_profile(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift()],
+            metrics=_metrics(lang_code="en", first_name="John", last_name="Smith"),
+            price=2.0,
+        )
+        decision = self.flt.evaluate(snap)
+        self.assertFalse(decision.matched)
+        self.assertTrue(any("русск" in reason for reason in decision.reasons))
+
+    def test_cyrillic_name_matches_without_lang(self) -> None:
+        snap = _snapshot(
+            gifts=[_gift()],
+            metrics=_metrics(lang_code=None, first_name="Сергей", last_name="Иванов"),
+            price=2.0,
+        )
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
     def test_skip_old_market_shell(self) -> None:
         snap = _snapshot(
             gifts=[_gift()],
@@ -308,6 +329,7 @@ class FilterSchemaTests(unittest.TestCase):
             self.assertEqual(live.floor_max_ton, 10.0)
             self.assertGreaterEqual(live.schema_version, 9)
             self.assertTrue(live.require_noob_profile)
+            self.assertTrue(live.require_russian)
             self.assertEqual(live.max_activity_score, 55)
             self.assertIsNone(live.require_premium)
 

@@ -947,4 +947,5 @@ class GiftMarketScanner:
             activity_score=score,
             stars_fetched=False,
             gifts_fetched=False,
+            lang_code=(getattr(user, "lang_code", None) or "") or None if user else None,
         )

@@ -732,6 +732,7 @@ class ProfileScanner:
             stars_rating_stars=parsed_stars,
             stars_fetched=stars_fetched,
             stargifts_count=stargifts_count,
+            lang_code=(getattr(user, "lang_code", None) or "") or None,
         )
 
     async def fetch_saved_gifts(

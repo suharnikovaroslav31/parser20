@@ -15,9 +15,9 @@ from config import Settings
 
 LOGGER = logging.getLogger("tg_gifts.runtime")
 DEFAULT_PATH = Path("data/filters.json")
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
-# Мамонт = ур.1, 1–2 NFT, 0–10 TON. Флипперов режем по витрине, не по Premium.
+# Мамонт = русский, ур.1, 1–2 NFT, 0–10 TON.
 ORIGINAL_FILTERS: dict[str, Any] = {
     "floor_min_ton": 0.0,
     "floor_max_ton": 10.0,
@@ -32,6 +32,7 @@ ORIGINAL_FILTERS: dict[str, Any] = {
     "max_regular_gifts": 0,
     "require_premium": None,
     "require_noob_profile": True,
+    "require_russian": True,
     "filter_seller_age": False,
     "alert_cooldown_hours": 24,
     "market_poll_sec": 45,
@@ -55,6 +56,7 @@ class LiveFilters:
     max_regular_gifts: int = 0
     filter_seller_age: bool = False
     require_noob_profile: bool = True
+    require_russian: bool = True
     alert_cooldown_hours: int = 24
     market_poll_sec: int = 45
     community_url: str = "https://t.me/GGsel_deal"
@@ -78,6 +80,7 @@ class LiveFilters:
             max_activity_score=55,
             max_regular_gifts=0,
             require_noob_profile=True,
+            require_russian=True,
             filter_seller_age=False,
             alert_cooldown_hours=int(settings.alert_cooldown_hours),
             market_poll_sec=int(settings.market_poll_sec),
@@ -122,7 +125,7 @@ class LiveFilters:
                 setattr(self, key, value)
             self.schema_version = SCHEMA_VERSION
             self.save()
-            LOGGER.info("Фильтры: мамонт = рейтинг 1, ≤2 NFT, без скрытой витрины")
+            LOGGER.info("Фильтры: русский мамонт, рейтинг 1, ≤2 NFT")
 
     def update(self, **kwargs: Any) -> None:
         for key, value in kwargs.items():
@@ -143,6 +146,7 @@ class LiveFilters:
             f"Возраст аккаунта: {age}",
             f"Premium: {premium}",
             f"Лох-профиль: {'да' if self.require_noob_profile else 'нет'}",
+            f"Только русские: {'да' if self.require_russian else 'нет'}",
             f"Мин. активность: {self.min_activity_score}",
             f"Макс. живость профиля: {'выкл' if self.max_activity_score <= 0 else self.max_activity_score}",
             f"Обычных гифтов: {'любое' if self.max_regular_gifts <= 0 else f'≤ {self.max_regular_gifts}'}",

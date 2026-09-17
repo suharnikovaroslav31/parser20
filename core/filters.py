@@ -30,6 +30,7 @@ _COMMON_LATIN = {
     "kate", "lisa", "tom", "tim", "adam", "mark", "paul", "peter", "jack",
     "leo", "artem", "kirill", "andrey", "sergey", "dmitry", "alexander",
 }
+_CYRILLIC = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]")
 _TRADER_NICK = re.compile(
     r"(nft|нфт|gifts?|гифт|resale|ресейл|tonnel|portals?|mrkt|fragment|floor|flip|snipe|getgems|collect)",
     re.IGNORECASE,
@@ -168,6 +169,15 @@ def looks_like_trader_username(username: Optional[str]) -> bool:
     return bool(_TRADER_NICK.search(username or ""))
 
 
+def looks_russian(metrics: AccountMetrics) -> bool:
+    """Язык клиента ru или кириллица в имени/био — отсекаем ин.перекупов."""
+    lang = (metrics.lang_code or "").strip().lower().replace("_", "-")
+    if lang == "ru" or lang.startswith("ru-"):
+        return True
+    text = f"{metrics.first_name or ''} {metrics.last_name or ''} {metrics.bio or ''}"
+    return bool(_CYRILLIC.search(text))
+
+
 def looks_like_shell_profile(metrics: AccountMetrics) -> bool:
     return (not metrics.username) and (not (metrics.bio or "").strip()) and (not metrics.has_photo)
 
@@ -225,6 +235,8 @@ class ProfileFilter:
             reasons.append("NFT профиля не прочитаны")
         if metrics.is_verified:
             reasons.append("verified — не новичок")
+        if live.require_russian and not looks_russian(metrics):
+            reasons.append("не русский профиль")
 
         if unique_count < live.min_unique_gifts:
             reasons.append(f"NFT в профиле {unique_count} < {live.min_unique_gifts}")
