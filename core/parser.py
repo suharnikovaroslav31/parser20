@@ -143,10 +143,32 @@ def _drop_session_lock() -> None:
         pass
 
 
+def _sqlite_usable() -> bool:
+    try:
+        return SESSION_SQLITE_FILE.exists() and SESSION_SQLITE_FILE.stat().st_size > 100
+    except OSError:
+        return False
+
+
+def _drop_sqlite_session() -> None:
+    for path in (
+        SESSION_SQLITE_FILE,
+        Path(f"{SESSION_SQLITE}.session-journal"),
+        Path("data/telethon.session-journal"),
+    ):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 def _bootstrap_sqlite_from_string(raw: str) -> bool:
     """Первый запуск на Bothost: переносим TELEGRAM_SESSION в живущий файл data/telethon.session."""
-    if SESSION_SQLITE_FILE.exists() and SESSION_SQLITE_FILE.stat().st_size > 100:
+    if _sqlite_usable():
         return True
+    _drop_sqlite_session()
+    if not raw:
+        return False
     try:
         src = StringSession(raw)
         if not getattr(src, "auth_key", None):
@@ -159,9 +181,10 @@ def _bootstrap_sqlite_from_string(raw: str) -> bool:
         finally:
             dest.close()
         LOGGER.info("Сессия перенесена в %s (папка data/ на Bothost не затирается)", SESSION_SQLITE_FILE)
-        return SESSION_SQLITE_FILE.exists()
+        return _sqlite_usable()
     except Exception as exc:
         LOGGER.warning("Не удалось собрать data/telethon.session: %s", exc)
+        _drop_sqlite_session()
         return False
 
 
@@ -344,13 +367,19 @@ class ProfileScanner:
         self._seen_at: dict[int, float] = {}
         self._me_id: Optional[int] = None
         self._queue: asyncio.Queue[tuple[User, str]] = asyncio.Queue()
+        self._session_raw = ""
         if fresh_login:
             LOGGER.info("Чистый логин: сессия из .env не берётся")
-            session = StringSession()
+            session: str | StringSession = StringSession()
         else:
-            raw = resolve_session_string(self.settings.telegram_session)
-            if SESSION_SQLITE_FILE.exists() or (raw and _bootstrap_sqlite_from_string(raw)):
-                session: str | StringSession = str(SESSION_SQLITE)
+            env_raw = self.settings.telegram_session.strip()
+            if env_raw and _env_hash(env_raw) != _read_env_hash():
+                LOGGER.info("TELEGRAM_SESSION новая — сбрасываю старый data/telethon.session")
+                _drop_sqlite_session()
+            raw = resolve_session_string(env_raw)
+            self._session_raw = raw
+            if raw and _bootstrap_sqlite_from_string(raw):
+                session = str(SESSION_SQLITE)
             elif raw:
                 try:
                     session = StringSession(raw)
@@ -363,19 +392,7 @@ class ProfileScanner:
             session,
             settings.api_id,
             settings.api_hash,
-            # Не маскируемся под официальный Desktop: иначе Telegram через несколько
-            # часов считает сессию дублем и отзывает AUTH_KEY.
-            device_model="TGGiftsParser",
-            system_version="Windows 10",
-            app_version="1.0",
-            lang_code="ru",
-            system_lang_code="ru",
-            timeout=15,
-            request_retries=2,
-            connection_retries=8,
-            retry_delay=2,
-            auto_reconnect=True,
-            flood_sleep_threshold=0,
+            **self._client_kwargs(),
         )
         self._flood.client = self.client
 
@@ -387,30 +404,71 @@ class ProfileScanner:
         LOGGER.info("TELEGRAM_SESSION=%s", StringSession.save(self.client.session))
         self.persist_session()
 
+    def _client_kwargs(self) -> dict[str, Any]:
+        return {
+            "device_model": "TGGiftsParser",
+            "system_version": "Windows 10",
+            "app_version": "1.0",
+            "lang_code": "ru",
+            "system_lang_code": "ru",
+            "timeout": 15,
+            "request_retries": 2,
+            "connection_retries": 8,
+            "retry_delay": 2,
+            "auto_reconnect": True,
+            "flood_sleep_threshold": 0,
+        }
+
     async def start(self) -> None:
         session_len = len(self.settings.telegram_session.strip())
         LOGGER.info(
-            "MTProto: %s",
-            f"{SESSION_SQLITE_FILE}" if SESSION_SQLITE_FILE.exists()
-            else (f"TELEGRAM_SESSION ({session_len} символов)" if session_len else f"файл {self.settings.session_name}"),
+            "MTProto: sqlite=%s env_len=%s",
+            _sqlite_usable(),
+            session_len,
         )
+        if session_len and session_len < 250:
+            LOGGER.error(
+                "TELEGRAM_SESSION слишком короткая (%s символов) — Bothost скорее всего обрезал строку при вставке",
+                session_len,
+            )
         _take_session_lock()
         await asyncio.wait_for(self.client.connect(), timeout=20)
         if not await self.client.is_user_authorized():
+            raw = self._session_raw or self.settings.telegram_session.strip()
+            LOGGER.warning("Сессия не авторизована, пробую TELEGRAM_SESSION строкой (len=%s)", len(raw))
             try:
                 await asyncio.wait_for(self.client.disconnect(), timeout=3)
             except Exception:
                 pass
-            if session_len:
+            _drop_sqlite_session()
+            if raw:
+                try:
+                    self.client = TelegramClient(
+                        StringSession(raw),
+                        self.settings.api_id,
+                        self.settings.api_hash,
+                        **self._client_kwargs(),
+                    )
+                    self._flood.client = self.client
+                    await asyncio.wait_for(self.client.connect(), timeout=20)
+                except Exception as exc:
+                    LOGGER.warning("повторный вход по строке не удался: %s", exc)
+            if not self.client.is_connected() or not await self.client.is_user_authorized():
+                try:
+                    await asyncio.wait_for(self.client.disconnect(), timeout=3)
+                except Exception:
+                    pass
+                if session_len:
+                    raise RuntimeError(
+                        f"TELEGRAM_SESSION недействительна (len={session_len}, слетела или обрезана при вставке). "
+                        "На ПК: python main.py --export-session — вставь строку ЦЕЛИКОМ в TELEGRAM_SESSION на хосте, без кавычек. "
+                        "В файловом менеджере Bothost удали data/telethon.session. "
+                        "Этот аккаунт не запускай на ПК, пока крутится хост."
+                    )
                 raise RuntimeError(
-                    "TELEGRAM_SESSION недействительна (слетела или обрезана при вставке). "
-                    "На ПК: python main.py --export-session — вставь строку ЦЕЛИКОМ в TELEGRAM_SESSION на хосте, без кавычек. "
-                    "Этот аккаунт не запускай на ПК, пока крутится хост."
+                    "TELEGRAM_SESSION пустая. На ПК: python main.py --login, затем python main.py --export-session, "
+                    "строку вставь в TELEGRAM_SESSION на хосте."
                 )
-            raise RuntimeError(
-                "TELEGRAM_SESSION пустая. На ПК: python main.py --login, затем python main.py --export-session, "
-                "строку вставь в TELEGRAM_SESSION на хосте."
-            )
         me = await asyncio.wait_for(self.client.get_me(), timeout=15)
         self._me_id = int(me.id)
         self.persist_session()
