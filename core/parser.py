@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import inspect
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -31,7 +32,7 @@ from telethon.errors import (
     RPCError,
     UserPrivacyRestrictedError,
 )
-from telethon.sessions import StringSession
+from telethon.sessions import SQLiteSession, StringSession
 from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.functions.payments import GetSavedStarGiftsRequest
 from telethon.tl.functions.users import GetFullUserRequest
@@ -56,7 +57,11 @@ from core.storage import Storage
 from core.ton_client import TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.parser")
+# Bothost хранит между рестартами только папку data/ (см. bothost.ru/docs/database-storage).
+SESSION_SQLITE = Path("data/telethon")
+SESSION_SQLITE_FILE = Path("data/telethon.session")
 SESSION_FILE = Path("data/mtproto.session.txt")
+SESSION_LOCK = Path("data/telethon.lock")
 ENV_HASH_FILE = Path("data/mtproto.env.sha256")
 
 try:
@@ -88,7 +93,9 @@ def _write_session_file(raw: str) -> None:
     if not raw:
         return
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(raw, encoding="utf-8")
+    tmp = SESSION_FILE.with_suffix(".txt.tmp")
+    tmp.write_text(raw, encoding="utf-8")
+    tmp.replace(SESSION_FILE)
 
 
 def _env_hash(raw: str) -> str:
@@ -117,6 +124,45 @@ def resolve_session_string(env_raw: str) -> str:
         LOGGER.info("TELEGRAM_SESSION новая — переключаю аккаунт сканера")
         return env_raw
     return file_raw or env_raw
+
+
+def _take_session_lock() -> None:
+    SESSION_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    if SESSION_LOCK.exists():
+        LOGGER.warning(
+            "data/telethon.lock уже есть — прошлый процесс не закрылся. "
+            "Два парсера с одним ключом = Telegram отзовёт сессию через несколько часов."
+        )
+    SESSION_LOCK.write_text(str(os.getpid()), encoding="utf-8")
+
+
+def _drop_session_lock() -> None:
+    try:
+        SESSION_LOCK.unlink()
+    except OSError:
+        pass
+
+
+def _bootstrap_sqlite_from_string(raw: str) -> bool:
+    """Первый запуск на Bothost: переносим TELEGRAM_SESSION в живущий файл data/telethon.session."""
+    if SESSION_SQLITE_FILE.exists() and SESSION_SQLITE_FILE.stat().st_size > 100:
+        return True
+    try:
+        src = StringSession(raw)
+        if not getattr(src, "auth_key", None):
+            return False
+        dest = SQLiteSession(str(SESSION_SQLITE))
+        try:
+            dest.set_dc(src.dc_id, src.server_address, src.port)
+            dest.auth_key = src.auth_key
+            dest.save()
+        finally:
+            dest.close()
+        LOGGER.info("Сессия перенесена в %s (папка data/ на Bothost не затирается)", SESSION_SQLITE_FILE)
+        return SESSION_SQLITE_FILE.exists()
+    except Exception as exc:
+        LOGGER.warning("Не удалось собрать data/telethon.session: %s", exc)
+        return False
 
 
 class TelegramFloodControl:
@@ -303,7 +349,9 @@ class ProfileScanner:
             session = StringSession()
         else:
             raw = resolve_session_string(self.settings.telegram_session)
-            if raw:
+            if SESSION_SQLITE_FILE.exists() or (raw and _bootstrap_sqlite_from_string(raw)):
+                session: str | StringSession = str(SESSION_SQLITE)
+            elif raw:
                 try:
                     session = StringSession(raw)
                 except Exception as exc:
@@ -315,9 +363,11 @@ class ProfileScanner:
             session,
             settings.api_id,
             settings.api_hash,
-            device_model="Desktop",
+            # Не маскируемся под официальный Desktop: иначе Telegram через несколько
+            # часов считает сессию дублем и отзывает AUTH_KEY.
+            device_model="TGGiftsParser",
             system_version="Windows 10",
-            app_version="4.16.30 x64",
+            app_version="1.0",
             lang_code="ru",
             system_lang_code="ru",
             timeout=15,
@@ -341,8 +391,10 @@ class ProfileScanner:
         session_len = len(self.settings.telegram_session.strip())
         LOGGER.info(
             "MTProto: %s",
-            f"TELEGRAM_SESSION ({session_len} символов)" if session_len else f"файл {self.settings.session_name}",
+            f"{SESSION_SQLITE_FILE}" if SESSION_SQLITE_FILE.exists()
+            else (f"TELEGRAM_SESSION ({session_len} символов)" if session_len else f"файл {self.settings.session_name}"),
         )
+        _take_session_lock()
         await asyncio.wait_for(self.client.connect(), timeout=20)
         if not await self.client.is_user_authorized():
             try:
@@ -389,7 +441,13 @@ class ProfileScanner:
             return False
 
     def persist_session(self) -> None:
-        """Пишем актуальный auth key на диск — после рестарта хоста строка из env может быть старой."""
+        """Пишем ключ в data/ — на Bothost только эта папка живёт между рестартами."""
+        try:
+            saver = getattr(self.client.session, "save", None)
+            if callable(saver):
+                saver()
+        except Exception:
+            pass
         try:
             raw = StringSession.save(self.client.session)
         except Exception:
@@ -404,6 +462,7 @@ class ProfileScanner:
         self.persist_session()
         if self.client.is_connected():
             await self.client.disconnect()
+        _drop_session_lock()
 
     def _register_live_handlers(self) -> None:
         """Мониторинг передач/получения подарков в чатах, доступных сессии."""
