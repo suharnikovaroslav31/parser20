@@ -90,7 +90,7 @@ def _esc(value: object) -> str:
 
 def format_lot_dm(lot: ClaimLot) -> str:
     handle = f"@{lot.seller_username}" if lot.seller_username else "без username"
-    num = f" #{lot.number}" if lot.number is not None else ""
+    num = f" #{lot.number}" if lot.number is not None and f"#{lot.number}" not in lot.title else ""
     price = f"{lot.price_ton:.2f}" if lot.price_ton is not None else "n/a"
     rating = f"ур. {lot.rating}" if lot.rating is not None else "н/д"
     nft = _esc(lot.nft_link) if lot.nft_link else "—"
@@ -118,7 +118,7 @@ def claimed_notice(claimed_by, lot: Optional[ClaimLot] = None) -> str:
     who = _esc(_claimer_label(claimed_by)) if claimed_by is not None else "уже занят"
     lines = [f"{e('check')} <b>Лот занят</b>", f"{e('user')} {who}"]
     if lot is not None:
-        num = f" #{lot.number}" if lot.number is not None else ""
+        num = f" #{lot.number}" if lot.number is not None and f"#{lot.number}" not in lot.title else ""
         title = f"{_esc(lot.title)}{num}".strip()
         if title:
             lines.insert(1, f"{e('gift')} {title}")

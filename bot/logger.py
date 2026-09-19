@@ -67,29 +67,49 @@ def _http_link(url: str, label: str) -> str:
     return f'<a href="{html.escape(text, quote=True)}">{_esc(label)}</a>'
 
 
-def _gift_line(gift: UniqueGift) -> str:
-    floor = _ton(gift.best_floor_ton)
-    source = gift.market_source or "telegram"
+def _gift_name(gift: UniqueGift) -> str:
+    title = (gift.title or "").strip()
+    if not title:
+        title = (gift.slug or "").replace("-", " ").strip() or "подарок"
     number = f" #{gift.number}" if gift.number is not None else ""
-    model = f" · {gift.model}" if gift.model else ""
-    title = f"{gift.title}{number}"
+    return f"{title}{number}"
+
+
+def _gift_block(gift: UniqueGift) -> str:
+    name = _gift_name(gift)
     link = gift.nft_link
-    if link.startswith("https://"):
-        return (
-            f"{e('gift')} {_http_link(link, title)}{_esc(model)} — "
-            f"{e('ton')} <code>{floor} TON</code> ({_esc(source)})"
-        )
-    return (
-        f"{e('gift')} {_esc(title)}{_esc(model)} — "
-        f"{e('ton')} <code>{floor} TON</code> ({_esc(source)})"
-    )
+    heading = _http_link(link, name) if link.startswith("https://") else _esc(name)
+    lines = [f"{e('gift')} <b>{heading}</b>"]
+    traits: list[str] = []
+    if gift.model:
+        traits.append(f"модель {_esc(gift.model)}")
+    if gift.backdrop:
+        traits.append(f"фон {_esc(gift.backdrop)}")
+    if gift.symbol:
+        traits.append(f"узор {_esc(gift.symbol)}")
+    if traits:
+        lines.append(" · ".join(traits))
+    source = gift.market_source or "telegram"
+    lines.append(f"{e('ton')} <code>{_ton(gift.best_floor_ton)} TON</code> · {_esc(source)}")
+    return "\n".join(lines)
+
+
+def _gifts_for_card(decision: FilterDecision) -> list[UniqueGift]:
+    snap = decision.snapshot
+    gifts = list(snap.cheap_gifts or [])
+    if not gifts and decision.cheapest_gift is not None:
+        gifts = [decision.cheapest_gift]
+    if not gifts:
+        gifts = list(snap.unique_gifts or [])
+    return gifts[:3]
 
 
 def _plain(decision: FilterDecision, live: LiveFilters) -> str:
     snap = decision.snapshot
     m = snap.metrics
-    gift = snap.cheap_gifts[0] if snap.cheap_gifts else None
-    title = f"{gift.title} #{gift.number}" if gift and gift.number is not None else (gift.title if gift else "лот")
+    gifts = _gifts_for_card(decision)
+    gift = gifts[0] if gifts else None
+    title = _gift_name(gift) if gift else "лот"
     return (
         f"Маркет {snap.source} | {_ton(snap.min_floor_ton)} TON\n"
         f"Продавец {m.display_name} id {m.user_id}\n"
@@ -112,9 +132,10 @@ class GiftLogger:
         snapshot = decision.snapshot
         metrics = snapshot.metrics
         handle = f"@{metrics.username}" if metrics.username else "без username"
-        cheap_block = "\n".join(_gift_line(gift) for gift in snapshot.cheap_gifts[:8]) or "—"
-        extra = f"\n... ещё {len(snapshot.cheap_gifts) - 8}" if len(snapshot.cheap_gifts) > 8 else ""
-        getgems = snapshot.unique_gifts[0].getgems_link if snapshot.unique_gifts else "https://getgems.io"
+        gifts = _gifts_for_card(decision)
+        gift_block = "\n\n".join(_gift_block(gift) for gift in gifts) or "—"
+        extra = f"\n... ещё {len(snapshot.cheap_gifts) - 3}" if len(snapshot.cheap_gifts) > 3 else ""
+        getgems = gifts[0].getgems_link if gifts else "https://getgems.io"
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         rating = f"ур. {metrics.stars_rating_level}" if metrics.stars_rating_level is not None else "н/д"
         community = self.live.community_url or COMMUNITY
@@ -125,8 +146,8 @@ class GiftLogger:
             else _esc(metrics.display_name)
         )
         return (
-            f"{e('cart')} <b>Маркет</b> <code>{_esc(_SOURCE_NAME.get(snapshot.source, snapshot.source))}</code> · "
-            f"{e('ton')} <code>{_ton(snapshot.min_floor_ton)} TON</code>\n"
+            f"{gift_block}{extra}\n"
+            f"{e('cart')} <b>Маркет</b> <code>{_esc(_SOURCE_NAME.get(snapshot.source, snapshot.source))}</code>\n"
             f"{e('user')} <b>Продавец</b> {profile_html} "
             f"({_esc(handle)})\n"
             f"{e('id')} ID <code>{metrics.user_id}</code>\n"
@@ -135,7 +156,6 @@ class GiftLogger:
             f"{e('gift')} <b>NFT в профиле:</b> "
             f"<code>{len(snapshot.unique_gifts)}</code> / макс <code>{self.live.max_unique_gifts}</code>\n"
             f"{e('chart')} <b>Регистрация</b> {_esc(_age_label(metrics.approx_registered_at, metrics.account_age_days))}\n"
-            f"{e('money')} <b>Лот</b>\n{cheap_block}{extra}\n"
             f"{e('link')} {_http_link(getgems, 'Getgems')} · {e('chat')} {_http_link(community, 'гарант')}\n"
             f"{e('bell')} <code>{now}</code> · сборка <code>{_esc(BUILD)}</code>\n"
             f"<i>{_esc('; '.join(decision.reasons))}</i>"
@@ -143,12 +163,15 @@ class GiftLogger:
 
     def _remember(self, decision: FilterDecision) -> str:
         snap = decision.snapshot
-        gift = snap.cheap_gifts[0] if snap.cheap_gifts else None
+        gift = snap.cheap_gifts[0] if snap.cheap_gifts else (snap.unique_gifts[0] if snap.unique_gifts else None)
         token = new_token()
+        title = _gift_name(gift) if gift else "лот"
+        if gift and gift.model:
+            title = f"{title} · {gift.model}"
         self.claims.put(
             ClaimLot(
                 token=token,
-                title=(gift.title if gift else "лот")[:80],
+                title=title[:80],
                 slug=(gift.slug if gift else "")[:80],
                 number=gift.number if gift else None,
                 price_ton=snap.min_floor_ton,
@@ -166,7 +189,8 @@ class GiftLogger:
 
     async def send(self, decision: FilterDecision) -> bool:
         token = self._remember(decision)
-        nft = decision.snapshot.cheap_gifts[0].nft_link if decision.snapshot.cheap_gifts else ""
+        gifts = _gifts_for_card(decision)
+        nft = gifts[0].nft_link if gifts else ""
         html_text = self.render(decision)
         plain = _plain(decision, self.live)
         chat = self.live.community_url or COMMUNITY
@@ -289,24 +313,7 @@ class GiftLogger:
             LOGGER.error("пинг сборки %s никуда не ушёл — группа/админ не видят бота", build)
 
     async def announce_pass(self, build: str, stats: str) -> None:
-        if not self.log_group_id:
-            return
-        text = (
-            f"{e('chart')} круг <code>{_esc(build)}</code>\n"
-            f"{_esc(stats)}"
-        )
-        try:
-            await asyncio.wait_for(
-                self.bot.send_message(
-                    chat_id=self.log_group_id,
-                    text=text,
-                    disable_web_page_preview=True,
-                    parse_mode=ParseMode.HTML,
-                ),
-                timeout=12,
-            )
-        except Exception as exc:
-            LOGGER.warning("сводка круга: %s", exc)
+        LOGGER.info("круг %s | %s", build, stats)
 
     async def _deliver(self, text: str, markup, *, html: bool) -> None:
         await asyncio.wait_for(

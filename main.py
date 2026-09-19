@@ -207,13 +207,7 @@ class AnalyticsApp:
             if self._stop.is_set() or not self.live.scanner_enabled:
                 break
             await self.handle_snapshot(snapshot)
-        try:
-            await asyncio.wait_for(
-                self.logger_bot.announce_pass(BUILD, self.filters.dump_stats()),
-                timeout=15,
-            )
-        except Exception as exc:
-            LOGGER.warning("сводка круга не ушла: %s", exc)
+        LOGGER.info("круг %s | %s", BUILD, self.filters.dump_stats())
 
     async def _scan_loop(self, live: bool) -> None:
         while not self._stop.is_set():
