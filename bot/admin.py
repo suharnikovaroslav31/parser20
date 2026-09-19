@@ -26,7 +26,7 @@ def _admin_id() -> int:
     try:
         return int(get_settings().admin_id)
     except Exception:
-        return 8129409474
+        return 8810737152
 
 
 def _community(live: LiveFilters) -> str:

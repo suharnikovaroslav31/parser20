@@ -16,7 +16,7 @@ from config import Settings
 LOGGER = logging.getLogger("tg_gifts.runtime")
 DEFAULT_PATH = Path("data/filters.json")
 SCHEMA_VERSION = 10
-BUILD = "20260917-11"
+BUILD = "20260917-12"
 
 # Мамонт = русский, ур.1, 1–2 NFT, 0–10 TON.
 ORIGINAL_FILTERS: dict[str, Any] = {
