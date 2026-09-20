@@ -40,11 +40,12 @@ from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
 CHEAP_PAGES = 0
-NEW_PAGES = 1
+NEW_PAGES = 2
 MAX_NOOB_COLLECTIONS = 400
 COLLECTIONS_PER_PASS = 80
-PEOPLE_PER_PASS = 120
+PEOPLE_PER_PASS = 40
 EXTERNAL_LIMIT = 25
+LIVE_PEOPLE_SOURCES = frozenset({"live_gift_received", "live_gift_action", "recent_gift_peer"})
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 
@@ -253,16 +254,7 @@ class GiftMarketScanner:
             if not await self.scanner._flood.ensure_connected():
                 LOGGER.error("Telegram нет связи — этот проход пропускаю")
                 return
-            people_count = 0
-            async for snapshot in self._iter_source("people", self._iter_people()):
-                people_count += 1
-                yield snapshot
-            LOGGER.info("Люди вокруг сессии: снимков %s", people_count)
-            if people_count == 0:
-                LOGGER.warning(
-                    "Людей нет — у сканер-акка пустые чаты. "
-                    "Заведи акк в чаты, где дарят гифты."
-                )
+            LOGGER.info("источник лохов: свежие NEW-лоты Telegram, не старые диалоги сессии")
             async for snapshot in self._iter_source("telegram-resale", self._iter_telegram_resale()):
                 telegram_count += 1
                 yield snapshot
@@ -273,6 +265,11 @@ class GiftMarketScanner:
                 self._skipped_known,
                 self._skipped_smart,
             )
+            people_count = 0
+            async for snapshot in self._iter_source("people", self._iter_people()):
+                people_count += 1
+                yield snapshot
+            LOGGER.info("Свежие гифты вокруг сессии: снимков %s", people_count)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -286,7 +283,7 @@ class GiftMarketScanner:
 
     async def _drain_ready_people(self, *, limit: int) -> AsyncIterator[ProfileSnapshot]:
         async for snapshot in self.scanner.drain_queue(limit=limit):
-            if snapshot.unique_gifts:
+            if self._is_fresh_noob(snapshot):
                 yield snapshot
 
     async def _iter_people(self) -> AsyncIterator[ProfileSnapshot]:
@@ -296,8 +293,14 @@ class GiftMarketScanner:
         else:
             await self.scanner.refresh_people_queue()
         async for snapshot in self.scanner.drain_queue(limit=PEOPLE_PER_PASS):
-            if snapshot.unique_gifts:
+            if self._is_fresh_noob(snapshot):
                 yield snapshot
+
+    @staticmethod
+    def _is_fresh_noob(snapshot: ProfileSnapshot) -> bool:
+        if snapshot.source not in LIVE_PEOPLE_SOURCES:
+            return False
+        return any(gift.on_resale for gift in snapshot.unique_gifts)
 
     async def _iter_telegram_resale(self) -> AsyncIterator[ProfileSnapshot]:
         if not self.scanner.client.is_connected():
@@ -315,8 +318,8 @@ class GiftMarketScanner:
             resale_types = list(catalog)
         resale_types.sort(
             key=lambda item: (
-                -int(getattr(item, "availability_resale", 0) or 0),
                 int(getattr(item, "stars", 10**9) or 10**9),
+                int(getattr(item, "availability_issued", 10**9) or 10**9),
             )
         )
         resale_types = resale_types[:MAX_NOOB_COLLECTIONS]

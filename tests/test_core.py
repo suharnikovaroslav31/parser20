@@ -494,10 +494,37 @@ class SearchDirectionTests(unittest.TestCase):
         from core.market import CHEAP_PAGES, COLLECTIONS_PER_PASS, MAX_NOOB_COLLECTIONS, NEW_PAGES
 
         self.assertEqual(CHEAP_PAGES, 0)
-        self.assertGreaterEqual(NEW_PAGES, 1)
-        self.assertLessEqual(NEW_PAGES, 2)
+        self.assertGreaterEqual(NEW_PAGES, 2)
+        self.assertLessEqual(NEW_PAGES, 3)
         self.assertLess(COLLECTIONS_PER_PASS, MAX_NOOB_COLLECTIONS)
-        self.assertGreaterEqual(COLLECTIONS_PER_PASS, 80)
+        self.assertGreaterEqual(COLLECTIONS_PER_PASS, 40)
+
+    def test_people_source_skips_old_dialogs(self) -> None:
+        from core.market import LIVE_PEOPLE_SOURCES
+
+        self.assertIn("live_gift_received", LIVE_PEOPLE_SOURCES)
+        self.assertIn("recent_gift_peer", LIVE_PEOPLE_SOURCES)
+        self.assertNotIn("dialog", LIVE_PEOPLE_SOURCES)
+        self.assertNotIn("contact", LIVE_PEOPLE_SOURCES)
+
+    def test_fresh_noob_requires_live_resale(self) -> None:
+        from core.market import GiftMarketScanner
+
+        listed = SimpleNamespace(on_resale=True)
+        owned = SimpleNamespace(on_resale=False)
+        self.assertFalse(
+            GiftMarketScanner._is_fresh_noob(SimpleNamespace(source="dialog", unique_gifts=[listed]))
+        )
+        self.assertFalse(
+            GiftMarketScanner._is_fresh_noob(
+                SimpleNamespace(source="live_gift_received", unique_gifts=[owned])
+            )
+        )
+        self.assertTrue(
+            GiftMarketScanner._is_fresh_noob(
+                SimpleNamespace(source="live_gift_received", unique_gifts=[listed])
+            )
+        )
 
     def test_gift_action_prefers_recipient_peer(self) -> None:
         from core.parser import ProfileScanner

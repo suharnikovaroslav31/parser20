@@ -112,7 +112,7 @@ class AnalyticsApp:
         await self.logger_bot.announce_build(BUILD, settings.admin_id)
         LOGGER.info("Лог-группа %s | админ %s | сборка %s", self.logger_bot.log_group_id, settings.admin_id, BUILD)
         LOGGER.info(
-            "Люди + Telegram cheap/NEW | рейтинг %s–%s | NFT %s–%s | лот %s–%s TON",
+            "Telegram NEW-лоты | рейтинг %s–%s | NFT %s–%s | лот %s–%s TON",
             self.live.stars_rating_min,
             self.live.stars_rating_max,
             self.live.min_unique_gifts,

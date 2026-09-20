@@ -575,21 +575,17 @@ class ProfileScanner:
     # Источники кандидатов
     # ------------------------------------------------------------------
     async def bootstrap_queue(self) -> int:
-        """Наполняет очередь seed-пользователями, чатами и диалогами."""
+        """Только кому только что прилетел гифт. Диалоги/контакты — старые витрины."""
         enqueued = 0
         enqueued += await self._enqueue_seeds()
-        enqueued += await self._enqueue_contacts()
-        enqueued += await self._enqueue_recent_gift_recipients(dialogs=150, messages=40)
+        enqueued += await self._enqueue_recent_gift_recipients(dialogs=80, messages=30)
         enqueued += await self._enqueue_seed_chats()
-        enqueued += await self._enqueue_dialogs(limit=300)
-        LOGGER.info("Очередь кандидатов: %s профилей", enqueued)
+        LOGGER.info("Очередь свежих гифтов: %s профилей", enqueued)
         return enqueued
 
     async def refresh_people_queue(self) -> int:
-        """Шире круг: новые гифты + свежие диалоги между кругами."""
-        count = await self._enqueue_recent_gift_recipients(dialogs=80, messages=25)
-        count += await self._enqueue_dialogs(limit=120)
-        LOGGER.info("Обновление людей: +%s", count)
+        count = await self._enqueue_recent_gift_recipients(dialogs=50, messages=20)
+        LOGGER.info("Обновление свежих гифтов: +%s", count)
         return count
 
     async def drain_queue(self, *, limit: int = 160) -> AsyncIterator[ProfileSnapshot]:
