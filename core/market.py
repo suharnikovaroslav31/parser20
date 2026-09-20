@@ -30,7 +30,7 @@ from core.filters import (
     looks_like_burner_name,
     name_has_foreign_script,
 )
-from core.listings import ListingTracker
+from core.listings import ListingTracker, SeenSellers
 from core.models import AccountMetrics, ProfileSnapshot, UniqueGift, utcnow
 from core.parser import ProfileScanner
 from core.ton_client import NANOTON, TonMarketClient, to_ton
@@ -205,6 +205,7 @@ class GiftMarketScanner:
         self.live = live
         self.stop_event = None
         self.tracker = ListingTracker()
+        self.seen_sellers = SeenSellers()
         self._skipped_known = 0
         self._tg_priced = 0
         self._skipped_smart = 0
@@ -353,12 +354,15 @@ class GiftMarketScanner:
         finally:
             try:
                 self.tracker.commit_scan()
+                self.seen_sellers.commit()
             except Exception:
                 self.tracker.discard_partial()
             self.stage = "idle"
 
     async def _drain_ready_people(self, *, limit: int) -> AsyncIterator[ProfileSnapshot]:
         async for snapshot in self.scanner.drain_queue(limit=limit):
+            if self.seen_sellers.seen(snapshot.metrics.user_id):
+                continue
             if self._is_fresh_noob(snapshot):
                 yield snapshot
 
@@ -370,6 +374,8 @@ class GiftMarketScanner:
             await self.scanner.refresh_people_queue()
         yielded = 0
         async for snapshot in self.scanner.drain_queue(limit=PEOPLE_PER_PASS):
+            if self.seen_sellers.seen(snapshot.metrics.user_id):
+                continue
             if self._is_fresh_noob(snapshot):
                 yielded += 1
                 yield snapshot
@@ -583,6 +589,10 @@ class GiftMarketScanner:
                 if not self.tracker.should_process(key):
                     self._skipped_known += 1
                     continue
+                owner_id = _lot_owner_id(raw)
+                if owner_id and self.seen_sellers.seen(int(owner_id)):
+                    self._skipped_known += 1
+                    continue
                 try:
                     snapshot = await self._snapshot_from_telegram_lot(
                         raw, users, price, ton_usd, source="tg_market", collection_id=gift_id
@@ -641,6 +651,9 @@ class GiftMarketScanner:
         user = self._seller_from_users(owner_id, users)
         if user is None:
             self._skipped_nouser += 1
+            return None
+        if owner_id and self.seen_sellers.seen(int(owner_id)):
+            self._skipped_known += 1
             return None
         if self._market_seller_is_flipper(user, source=source):
             self._skipped_smart += 1
@@ -834,6 +847,9 @@ class GiftMarketScanner:
         if price is None:
             return None
         if price < self.live.floor_min_ton or price >= self.live.floor_max_ton:
+            return None
+        if self.seen_sellers.seen(int(getattr(user, "id", 0) or 0)):
+            self._skipped_known += 1
             return None
         title = str(
             item.get("name")

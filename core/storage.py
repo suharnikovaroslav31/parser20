@@ -172,13 +172,24 @@ class Storage:
         await self.cache_set(key, json.dumps(value, ensure_ascii=False, default=str), ttl)
 
     async def already_alerted(self, user_id: int, fingerprint: str, ttl: int) -> bool:
-        """True, если такой же набор подарков уже отправляли в лог-группу."""
-        key = f"tg:alert:{user_id}:{fingerprint}"
-        if await self.cache_get(key):
+        """True, если этого человека уже слали в лог-группу — лот не важен."""
+        if await self.cache_get(f"tg:alert:{user_id}"):
             return True
-        short = f"tg:alert:{user_id}"
-        stored = await self.cache_get(short)
-        return stored == fingerprint
+        if await self.cache_get(f"tg:alert:{user_id}:{fingerprint}"):
+            return True
+        return False
+
+    def known_alert_users(self) -> set[int]:
+        ids: set[int] = set()
+        for key in list(self._memory._data.keys()):
+            parts = str(key).split(":")
+            if len(parts) < 3 or parts[0] != "tg" or parts[1] != "alert":
+                continue
+            try:
+                ids.add(int(parts[2]))
+            except (TypeError, ValueError):
+                continue
+        return ids
 
     async def mark_alerted(self, user_id: int, fingerprint: str, ttl: int) -> None:
         await self.cache_set(f"tg:alert:{user_id}:{fingerprint}", "1", ttl)

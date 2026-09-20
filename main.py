@@ -79,6 +79,7 @@ class AnalyticsApp:
         self._pass_task: Optional[asyncio.Task] = None
         self._alert_tasks: set[asyncio.Task] = set()
         self._pending_alerts: set[str] = set()
+        self._pending_people: set[int] = set()
 
     def request_stop(self, *_args: object) -> None:
         self._sigint += 1
@@ -110,6 +111,7 @@ class AnalyticsApp:
             LOGGER.warning("getMe бота: %s", exc)
         await self.logger_bot.probe()
         await self.logger_bot.announce_build(BUILD, settings.admin_id)
+        self.markets.seen_sellers.seed(self.storage.known_alert_users())
         LOGGER.info("Лог-группа %s | админ %s | сборка %s", self.logger_bot.log_group_id, settings.admin_id, BUILD)
         LOGGER.info(
             "Telegram NEW-лоты | рейтинг %s–%s | NFT %s–%s | лот %s–%s TON",
@@ -171,19 +173,26 @@ class AnalyticsApp:
                 if opened:
                     self.markets.tracker.mark(key)
                 return
-            cooldown = self.live.alert_cooldown_sec
-            if await self.storage.already_alerted(snapshot.metrics.user_id, snapshot.fingerprint, cooldown):
-                LOGGER.info("Дедуп user=%s", snapshot.metrics.user_id)
+            uid = int(snapshot.metrics.user_id)
+            if uid in self._pending_people or self.markets.seen_sellers.seen(uid):
+                LOGGER.info("уже слали user=%s — другого лота не будет", uid)
+                if opened:
+                    self.markets.tracker.mark(key)
+                return
+            cooldown = max(self.live.alert_cooldown_sec, 7 * 24 * 3600)
+            if await self.storage.already_alerted(uid, snapshot.fingerprint, cooldown):
+                LOGGER.info("уже слали user=%s — другого лота не будет", uid)
+                self.markets.seen_sellers.mark(uid)
                 if opened:
                     self.markets.tracker.mark(key)
                 return
             fp = snapshot.fingerprint
-            if fp in self._pending_alerts:
-                return
+            self._pending_people.add(uid)
             self._pending_alerts.add(fp)
+            self.markets.seen_sellers.mark(uid)
             task = asyncio.create_task(
-                self._emit_alert(snapshot, decision, key, opened, cooldown, fp),
-                name=f"alert:{snapshot.metrics.user_id}",
+                self._emit_alert(snapshot, decision, key, opened, cooldown, fp, uid),
+                name=f"alert:{uid}",
             )
             self._alert_tasks.add(task)
             task.add_done_callback(self._alert_tasks.discard)
@@ -193,18 +202,19 @@ class AnalyticsApp:
                 snapshot.metrics.user_id,
             )
 
-    async def _emit_alert(self, snapshot, decision, key: str, opened: bool, cooldown: int, fp: str) -> None:
+    async def _emit_alert(self, snapshot, decision, key: str, opened: bool, cooldown: int, fp: str, uid: int) -> None:
         try:
             sent = await asyncio.wait_for(self.logger_bot.send(decision), timeout=12)
             if sent:
-                await self.storage.mark_alerted(snapshot.metrics.user_id, snapshot.fingerprint, cooldown)
+                await self.storage.mark_alerted(uid, snapshot.fingerprint, cooldown)
+                self.markets.seen_sellers.mark(uid)
                 if opened:
                     self.markets.tracker.mark(key)
                 self._matched += 1
                 LOGGER.info(
                     "ALERT #%s user=%s rating=%s gifts=%s floor=%s",
                     self._matched,
-                    snapshot.metrics.user_id,
+                    uid,
                     snapshot.metrics.stars_rating_level,
                     len(snapshot.unique_gifts),
                     snapshot.min_floor_ton,
@@ -212,15 +222,18 @@ class AnalyticsApp:
                 return
             LOGGER.error(
                 "MATCH user=%s, карточка в группу не ушла — лот повторю в следующем круге",
-                snapshot.metrics.user_id,
+                uid,
             )
+            self.markets.seen_sellers.release(uid)
         except Exception:
+            self.markets.seen_sellers.release(uid)
             LOGGER.exception(
                 "сбой карточки user=%s — круг сканера не рву",
-                snapshot.metrics.user_id,
+                uid,
             )
         finally:
             self._pending_alerts.discard(fp)
+            self._pending_people.discard(uid)
 
     async def _one_pass(self) -> None:
         self.filters.reset_stats()
@@ -278,7 +291,7 @@ class AnalyticsApp:
             if not live or self._stop.is_set():
                 break
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=min(8, max(3, self.live.market_poll_sec)))
+                await asyncio.wait_for(self._stop.wait(), timeout=1)
             except asyncio.TimeoutError:
                 continue
 

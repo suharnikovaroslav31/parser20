@@ -498,6 +498,29 @@ class TrackerVersionTests(unittest.TestCase):
             self.assertTrue(tracker.should_process("tg:PlushPepe-1"))
 
 
+class SeenSellersTests(unittest.TestCase):
+    def test_same_person_is_blocked_across_lots(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from core.listings import SeenSellers
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sellers.json"
+            seen = SeenSellers(path)
+            self.assertFalse(seen.seen(1210130271))
+            seen.mark(1210130271)
+            self.assertTrue(seen.seen(1210130271))
+            seen.release(1210130271)
+            self.assertFalse(seen.seen(1210130271))
+            seen.mark(1210130271)
+            seen.commit()
+            again = SeenSellers(path)
+            self.assertTrue(again.seen(1210130271))
+            again.seed({999})
+            self.assertTrue(again.seen(999))
+
+
 class NanotonTests(unittest.TestCase):
     def test_nanoton_constant(self) -> None:
         self.assertEqual(NANOTON, 1_000_000_000)
