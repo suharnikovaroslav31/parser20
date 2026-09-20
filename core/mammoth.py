@@ -37,12 +37,12 @@ FLOOR_MAX = 10.0
 RATING_LEVEL = 1
 MIN_NFT = 1
 MAX_NFT = 2
-# До 28% от флора = знает рынок. Берём только явный промах цены.
-SMART_FLOOR_BAND = 0.28
-MIN_OVERPRICE = 1.30  # ask >= floor * 1.30
-MAX_RICHNESS = 40  # username+photo+bio уже край; premium+юзернейм+фото — шарит
-MAX_STARGIFTS = 6
-MAX_STARS_IN_LVL1 = 80
+# До 18% от флора = знает рынок. Берём заметный промах цены.
+SMART_FLOOR_BAND = 0.18
+MIN_OVERPRICE = 1.18  # ask >= floor * 1.18
+MAX_RICHNESS = 45  # premium+юзернейм+фото = шарит; просто имя+фото — ок
+MAX_STARGIFTS = 8
+MAX_STARS_IN_LVL1 = 500  # внутри ур.1 ещё норм; тысячи = уже крутит
 COLLECTIONS_PER_PASS = 24
 NEW_PAGES = 2
 FLOOR_SAMPLE = 15
@@ -466,6 +466,10 @@ class MammothHunter:
 
     async def _scan_collection(self, gift_id: int, title: str) -> AsyncIterator[FilterDecision]:
         floor = await self._learn_floor(gift_id, title)
+        if floor is None or floor * MIN_OVERPRICE >= FLOOR_MAX:
+            if floor is not None:
+                LOGGER.info("коллекция %s: флор %.2f — в окне 0–10 нет промаха, skip", title, floor)
+            return
         left = FULL_PER_COLLECTION
         offset = ""
         for _ in range(NEW_PAGES):
@@ -664,6 +668,16 @@ class MammothHunter:
         cached = self._seller_cache.get(uid)
         if cached is not None:
             metrics, profile = cached
+            if not profile and (
+                metrics.stars_rating_level != RATING_LEVEL
+                or profile_richness(metrics) > MAX_RICHNESS
+                or (metrics.stargifts_count is not None and metrics.stargifts_count > MAX_STARGIFTS)
+                or (
+                    metrics.stars_rating_stars is not None
+                    and metrics.stars_rating_stars > MAX_STARS_IN_LVL1
+                )
+            ):
+                return None
         else:
             metrics = await self._fetch_metrics(user)
             if not metrics.stars_fetched:
@@ -672,6 +686,13 @@ class MammothHunter:
                 self._seller_cache[uid] = (metrics, [])
                 return None
             if metrics.stargifts_count is not None and metrics.stargifts_count > MAX_STARGIFTS:
+                self._seller_cache[uid] = (metrics, [])
+                return None
+            if (
+                metrics.stars_rating_stars is not None
+                and metrics.stars_rating_stars > MAX_STARS_IN_LVL1
+            ):
+                self._seller_cache[uid] = (metrics, [])
                 return None
             if profile_richness(metrics) > MAX_RICHNESS:
                 self._seller_cache[uid] = (metrics, [])

@@ -126,10 +126,10 @@ class MammothJudgeTests(unittest.TestCase):
 class HelperTests(unittest.TestCase):
     def test_floor_band(self) -> None:
         self.assertTrue(at_floor(5.0, 5.0))
-        self.assertTrue(at_floor(6.0, 5.0))  # +20% — ещё шарит
-        self.assertFalse(at_floor(7.0, 5.0))  # +40%
-        self.assertTrue(dumb_price(7.0, 5.0))
-        self.assertFalse(dumb_price(6.0, 5.0))
+        self.assertTrue(at_floor(5.7, 5.0))  # +14% — ещё шарит
+        self.assertFalse(at_floor(6.2, 5.0))  # +24%
+        self.assertTrue(dumb_price(6.2, 5.0))
+        self.assertFalse(dumb_price(5.5, 5.0))
 
     def test_burner(self) -> None:
         self.assertTrue(is_burner("Ywnnwkan", "Absoanwbw"))
@@ -145,7 +145,7 @@ class HelperTests(unittest.TestCase):
         self.assertAlmostEqual(listing_price_ton(gift), 2.5)
 
     def test_build(self) -> None:
-        self.assertEqual(BUILD, "20260920-22")
+        self.assertEqual(BUILD, "20260920-23")
         self.assertEqual(RATING_LEVEL, 1)
 
 

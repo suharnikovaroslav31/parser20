@@ -102,7 +102,7 @@ class MammothApp:
         await self.logger_bot.probe()
         await self.logger_bot.announce_build(BUILD, self.settings.admin_id)
         LOGGER.info(
-            "лог-группа %s | лох = ур.1 · бедный профиль · цена ≥130%% флора · без флипперов",
+            "лог-группа %s | лох = ур.1 · бедный профиль · цена ≥118%% флора · без флипперов",
             self.logger_bot.log_group_id,
         )
 

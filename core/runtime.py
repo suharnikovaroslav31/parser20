@@ -16,7 +16,7 @@ from config import Settings
 LOGGER = logging.getLogger("tg_gifts.runtime")
 DEFAULT_PATH = Path("data/filters.json")
 SCHEMA_VERSION = 12
-BUILD = "20260920-22"
+BUILD = "20260920-23"
 
 # Лох = новичок: русский, ур.1, бедный профиль, 1–2 NFT, цена явно мимо флора.
 ORIGINAL_FILTERS: dict[str, Any] = {
