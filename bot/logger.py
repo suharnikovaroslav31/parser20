@@ -161,6 +161,30 @@ class GiftLogger:
             f"<i>{_esc('; '.join(decision.reasons))}</i>"
         )
 
+    def render_caption(self, decision: FilterDecision) -> str:
+        snapshot = decision.snapshot
+        metrics = snapshot.metrics
+        handle = f"@{metrics.username}" if metrics.username else "без username"
+        gifts = _gifts_for_card(decision)
+        gift_block = "\n".join(_gift_block(gift) for gift in gifts) or "—"
+        rating = f"ур. {metrics.stars_rating_level}" if metrics.stars_rating_level is not None else "н/д"
+        profile = metrics.telegram_link
+        profile_html = (
+            _http_link(profile, metrics.display_name)
+            if profile.startswith("https://")
+            else _esc(metrics.display_name)
+        )
+        text = (
+            f"{gift_block}\n"
+            f"{e('user')} {profile_html} ({_esc(handle)})\n"
+            f"{e('id')} <code>{metrics.user_id}</code> · {e('star')} {_esc(rating)} · "
+            f"NFT <code>{len(snapshot.unique_gifts)}</code>\n"
+            f"{e('cart')} {_esc(_SOURCE_NAME.get(snapshot.source, snapshot.source))}"
+        )
+        if len(text) > 1024:
+            text = strip(text)
+        return text[:1024]
+
     def _remember(self, decision: FilterDecision) -> str:
         snap = decision.snapshot
         gift = snap.cheap_gifts[0] if snap.cheap_gifts else (snap.unique_gifts[0] if snap.unique_gifts else None)
@@ -192,16 +216,18 @@ class GiftLogger:
         gifts = _gifts_for_card(decision)
         nft = gifts[0].nft_link if gifts else ""
         html_text = self.render(decision)
+        caption = self.render_caption(decision)
+        photo = gifts[0].image_url if gifts else ""
         plain = _plain(decision, self.live)
         chat = self.live.community_url or COMMUNITY
         last_error = None
-        for attempt in range(8):
+        for attempt in range(3):
             markup = lot_keyboard(token, nft, chat)
             try:
-                await self._deliver(html_text, markup, html=True)
+                await self._deliver(html_text, markup, html=True, photo_url=photo, caption=caption, nft_link=nft)
                 return True
             except TelegramRetryAfter as exc:
-                wait = min(int(getattr(exc, "retry_after", 5) or 5) + 1, 20)
+                wait = min(int(getattr(exc, "retry_after", 3) or 3) + 1, 6)
                 LOGGER.warning("группа flood, жду %sс (попытка %s)", wait, attempt + 1)
                 await asyncio.sleep(wait)
                 last_error = exc
@@ -222,16 +248,30 @@ class GiftLogger:
                 html_text = strip(html_text)
                 use_html = "too long" not in text_l and "message is too long" not in text_l
                 try:
-                    await self._deliver(html_text if use_html else plain, lot_keyboard(token, nft, chat), html=use_html)
+                    await self._deliver(
+                        html_text if use_html else plain,
+                        lot_keyboard(token, nft, chat),
+                        html=use_html,
+                        photo_url=photo,
+                        caption=caption,
+                        nft_link=nft,
+                    )
                     return True
                 except TelegramRetryAfter as exc2:
-                    wait = min(int(getattr(exc2, "retry_after", 5) or 5) + 1, 20)
+                    wait = min(int(getattr(exc2, "retry_after", 3) or 3) + 1, 6)
                     LOGGER.warning("группа flood после fallback, жду %sс", wait)
                     await asyncio.sleep(wait)
                     continue
                 except TelegramAPIError:
                     try:
-                        await self._deliver(plain, lot_keyboard(token, nft, chat), html=False)
+                        await self._deliver(
+                            plain,
+                            lot_keyboard(token, nft, chat),
+                            html=False,
+                            photo_url=photo,
+                            caption=strip(caption)[:1024],
+                            nft_link=nft,
+                        )
                         return True
                     except TelegramRetryAfter as exc3:
                         await asyncio.sleep(min(int(getattr(exc3, "retry_after", 5) or 5) + 1, 20))
@@ -315,14 +355,40 @@ class GiftLogger:
     async def announce_pass(self, build: str, stats: str) -> None:
         LOGGER.info("круг %s | %s", build, stats)
 
-    async def _deliver(self, text: str, markup, *, html: bool) -> None:
+    async def _deliver(
+        self,
+        text: str,
+        markup,
+        *,
+        html: bool,
+        photo_url: str = "",
+        caption: str = "",
+        nft_link: str = "",
+    ) -> None:
+        parse_mode = ParseMode.HTML if html else None
+        if photo_url:
+            try:
+                await asyncio.wait_for(
+                    self.bot.send_photo(
+                        chat_id=self.log_group_id,
+                        photo=photo_url,
+                        caption=caption or text[:1024],
+                        reply_markup=markup,
+                        parse_mode=parse_mode,
+                    ),
+                    timeout=8,
+                )
+                return
+            except (TelegramBadRequest, asyncio.TimeoutError) as exc:
+                LOGGER.warning("фото гифта не ушло (%s)", exc)
+        preview = f"{nft_link}\n{text}" if nft_link and nft_link not in text else text
         await asyncio.wait_for(
             self.bot.send_message(
                 chat_id=self.log_group_id,
-                text=text,
+                text=preview,
                 reply_markup=markup,
-                disable_web_page_preview=True,
-                parse_mode=ParseMode.HTML if html else None,
+                disable_web_page_preview=False,
+                parse_mode=parse_mode,
             ),
-            timeout=20,
+            timeout=8,
         )

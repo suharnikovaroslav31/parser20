@@ -40,7 +40,7 @@ from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
 CHEAP_PAGES = 0
-NEW_PAGES = 2
+NEW_PAGES = 1
 MAX_NOOB_COLLECTIONS = 400
 COLLECTIONS_PER_PASS = 80
 PEOPLE_PER_PASS = 120
@@ -339,8 +339,11 @@ class GiftMarketScanner:
             if self._stopping():
                 return
             if self.scanner._flood.cooling:
-                LOGGER.info("Telegram flood — останавливаю обход коллекций до следующего круга")
-                return
+                left = max(0.0, self.scanner._flood.cool_until - time.monotonic())
+                if left > 0:
+                    LOGGER.info("Telegram flood %.1fs — коллекцию пропускаю, жду не больше 4с", left)
+                    await asyncio.sleep(min(left, 4.0))
+                    continue
             gift_id = int(getattr(base, "id", 0) or 0)
             title = str(getattr(base, "title", "") or gift_id)
             if not gift_id:
@@ -354,6 +357,8 @@ class GiftMarketScanner:
                 raise
             except Exception as exc:
                 LOGGER.warning("resale %s (%s): %s", title, gift_id, exc)
+                if self.scanner._flood.cooling:
+                    continue
             if index % 8 == 0:
                 async for snapshot in self._drain_ready_people(limit=10):
                     yield snapshot
@@ -401,7 +406,7 @@ class GiftMarketScanner:
                         sort_by_price=True if sort_by_price else None,
                     )
                 ),
-                retries=2,
+                retries=1,
                 label=f"resale:{gift_id}:{'price' if sort_by_price else 'new'}",
             )
             users = {
@@ -451,17 +456,16 @@ class GiftMarketScanner:
             offset = next_offset
 
     async def _apply_floor(self, unique: UniqueGift, collection_id: int = 0) -> None:
+        """Флор коллекции из кэша. GetUniqueStarGiftValueInfo на каждый лот не зовём — FloodWait."""
+        known = self._collection_floor.get(int(collection_id)) if collection_id else None
         slug = (unique.slug or "").strip()
         cached = self._value_cache.get(slug) if slug else None
         if cached is not None:
             unique.telegram_floor_ton, unique.fair_value_ton = cached
-        else:
-            await self.scanner._enrich_telegram_floor(unique)
-            if slug:
-                self._value_cache[slug] = (unique.telegram_floor_ton, unique.fair_value_ton)
-        floor = unique.telegram_floor_ton
-        if floor and collection_id:
-            self._collection_floor[int(collection_id)] = floor
+        elif known is not None:
+            unique.telegram_floor_ton = unique.telegram_floor_ton or known
+        if unique.telegram_floor_ton and collection_id:
+            self._collection_floor[int(collection_id)] = unique.telegram_floor_ton
 
     def _market_seller_is_flipper(self, user: Optional[User], *, source: str) -> bool:
         if source != "tg_market" or user is None:
@@ -499,7 +503,7 @@ class GiftMarketScanner:
         unique.seller_id = owner_id
         unique.seller_name = getattr(raw, "owner_name", None)
         user = self._seller_from_users(owner_id, users)
-        if self._market_seller_is_flipper(user, source=source):
+        if user is None or self._market_seller_is_flipper(user, source=source):
             self._skipped_smart += 1
             return None
         known_floor = self._collection_floor.get(int(collection_id)) if collection_id else None
@@ -517,10 +521,22 @@ class GiftMarketScanner:
         if cached is not None:
             metrics, profile_uniques, regular = cached
         else:
-            profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
             metrics = await self._metrics_for_seller(user, owner_id, unique.seller_name)
+            level = metrics.stars_rating_level
+            if self.live.require_stars_rating and (
+                level is None or level < self.live.stars_rating_min or level > self.live.stars_rating_max
+            ):
+                self._skipped_smart += 1
+                return None
+            gifts_count = metrics.stargifts_count
+            if gifts_count is not None and (
+                gifts_count < self.live.min_unique_gifts or gifts_count > self.live.max_unique_gifts
+            ):
+                self._skipped_smart += 1
+                return None
+            profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
             metrics.gifts_fetched = gifts_ok
-            if owner_id and metrics.stars_fetched and gifts_ok:
+            if owner_id and metrics.stars_fetched:
                 self._seller_cache[int(owner_id)] = (metrics, profile_uniques, regular)
         profile_uniques = profile_unique_gifts(
             profile_uniques, unique, gifts_fetched=metrics.gifts_fetched, stargifts_count=metrics.stargifts_count

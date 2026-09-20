@@ -129,6 +129,13 @@ class UniqueGift:
         return f"https://t.me/nft/{slug}" if slug else ""
 
     @property
+    def image_url(self) -> str:
+        slug = re.sub(r"[^A-Za-z0-9_-]+", "", self.slug or "")
+        if not slug:
+            return ""
+        return f"https://nft.fragment.com/gift/{slug.lower()}.large.jpg"
+
+    @property
     def getgems_link(self) -> str:
         addr = re.sub(r"[^A-Za-z0-9_-]+", "", self.gift_address or "")
         if addr:

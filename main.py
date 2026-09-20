@@ -77,6 +77,8 @@ class AnalyticsApp:
         self._matched = 0
         self._tasks: list[asyncio.Task] = []
         self._pass_task: Optional[asyncio.Task] = None
+        self._alert_tasks: set[asyncio.Task] = set()
+        self._pending_alerts: set[str] = set()
 
     def request_stop(self, *_args: object) -> None:
         self._sigint += 1
@@ -175,7 +177,25 @@ class AnalyticsApp:
                 if opened:
                     self.markets.tracker.mark(key)
                 return
-            sent = await asyncio.wait_for(self.logger_bot.send(decision), timeout=90)
+            fp = snapshot.fingerprint
+            if fp in self._pending_alerts:
+                return
+            self._pending_alerts.add(fp)
+            task = asyncio.create_task(
+                self._emit_alert(snapshot, decision, key, opened, cooldown, fp),
+                name=f"alert:{snapshot.metrics.user_id}",
+            )
+            self._alert_tasks.add(task)
+            task.add_done_callback(self._alert_tasks.discard)
+        except Exception:
+            LOGGER.exception(
+                "сбой карточки user=%s — круг сканера не рву",
+                snapshot.metrics.user_id,
+            )
+
+    async def _emit_alert(self, snapshot, decision, key: str, opened: bool, cooldown: int, fp: str) -> None:
+        try:
+            sent = await asyncio.wait_for(self.logger_bot.send(decision), timeout=12)
             if sent:
                 await self.storage.mark_alerted(snapshot.metrics.user_id, snapshot.fingerprint, cooldown)
                 if opened:
@@ -189,7 +209,6 @@ class AnalyticsApp:
                     len(snapshot.unique_gifts),
                     snapshot.min_floor_ton,
                 )
-                await asyncio.sleep(0.4)
                 return
             LOGGER.error(
                 "MATCH user=%s, карточка в группу не ушла — лот повторю в следующем круге",
@@ -200,6 +219,8 @@ class AnalyticsApp:
                 "сбой карточки user=%s — круг сканера не рву",
                 snapshot.metrics.user_id,
             )
+        finally:
+            self._pending_alerts.discard(fp)
 
     async def _one_pass(self) -> None:
         self.filters.reset_stats()
@@ -257,7 +278,7 @@ class AnalyticsApp:
             if not live or self._stop.is_set():
                 break
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self.live.market_poll_sec)
+                await asyncio.wait_for(self._stop.wait(), timeout=min(8, max(3, self.live.market_poll_sec)))
             except asyncio.TimeoutError:
                 continue
 
@@ -284,7 +305,8 @@ class AnalyticsApp:
                     "да" if self._pass_task is not None and not self._pass_task.done() else "нет",
                     self.filters.dump_stats(),
                 )
-                if connected and ticks % 2 == 0:
+                scanning = self._pass_task is not None and not self._pass_task.done()
+                if connected and ticks % 2 == 0 and not scanning:
                     await self.scanner.ping()
 
     async def _watchdog(self) -> None:
@@ -307,7 +329,7 @@ class AnalyticsApp:
             else:
                 stale = 0
             last = mark
-            if stale < 18:
+            if stale < 4:
                 continue
             LOGGER.error(
                 "сканер завис на %s seen=%s — рву проход, Telegram не трогаю",
@@ -341,7 +363,11 @@ class AnalyticsApp:
     async def run(self, *, live: bool) -> None:
         poll_task = scan_task = beat_task = watch_task = stopper = None
         try:
-            await self.start()
+            try:
+                await self.start()
+            except Exception:
+                LOGGER.exception("старт не удался")
+                raise
             poll_task = asyncio.create_task(
                 self._forever(
                     "бот",
@@ -473,7 +499,7 @@ async def _amain(once: bool) -> None:
                 pass
     if hasattr(signal, "SIGBREAK"):
         try:
-            signal.signal(signal.SIGBREAK, lambda *_: app.request_stop())
+            signal.signal(signal.SIGBREAK, signal.SIG_IGN)
         except (OSError, ValueError):
             pass
     await app.run(live=not once)

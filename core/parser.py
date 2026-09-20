@@ -126,13 +126,28 @@ def resolve_session_string(env_raw: str) -> str:
     return file_raw or env_raw
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def _take_session_lock() -> None:
     SESSION_LOCK.parent.mkdir(parents=True, exist_ok=True)
     if SESSION_LOCK.exists():
-        LOGGER.warning(
-            "data/telethon.lock уже есть — прошлый процесс не закрылся. "
-            "Два парсера с одним ключом = Telegram отзовёт сессию через несколько часов."
-        )
+        try:
+            old = int(SESSION_LOCK.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            old = 0
+        if old and old != os.getpid() and _pid_alive(old):
+            LOGGER.warning(
+                "data/telethon.lock pid=%s ещё жив — два парсера с одним ключом убьют сессию",
+                old,
+            )
+        else:
+            LOGGER.info("старый telethon.lock снят (процесс уже не жив)")
     SESSION_LOCK.write_text(str(os.getpid()), encoding="utf-8")
 
 
@@ -191,7 +206,7 @@ def _bootstrap_sqlite_from_string(raw: str) -> bool:
 class TelegramFloodControl:
     """FloodWait и зависшие RPC: не спим минутами, при timeout переподключаемся."""
 
-    RPC_TIMEOUT = 18.0
+    RPC_TIMEOUT = 10.0
 
     def __init__(self, limiter: AsyncRateLimiter) -> None:
         self.limiter = limiter
@@ -211,8 +226,9 @@ class TelegramFloodControl:
         return self.stop_event is not None and self.stop_event.is_set()
 
     def _note_flood(self, wait: int) -> None:
-        pause = min(max(wait, 15), 90)
-        self.cool_until = max(self.cool_until, time.monotonic() + pause)
+        pause = min(max(int(wait or 0), 0), 20)
+        if pause >= 20:
+            self.cool_until = max(self.cool_until, time.monotonic() + min(pause, 12))
 
     async def _sleep(self, seconds: float) -> None:
         if seconds <= 0:
@@ -323,7 +339,7 @@ class TelegramFloodControl:
             except FloodWaitError as exc:
                 wait = int(getattr(exc, "seconds", 1) or 1)
                 self._note_flood(wait)
-                if wait <= 25 and attempt + 1 < retries:
+                if wait <= 3 and attempt + 1 < retries:
                     LOGGER.warning("Telegram FloodWait %s: пауза %ss", label, wait)
                     await self._sleep(wait)
                     last_error = exc
@@ -362,7 +378,8 @@ class ProfileScanner:
         self.settings = settings
         self.storage = storage
         self.market = market
-        self._limiter = AsyncRateLimiter(settings.telegram_concurrency, min_interval=0.1, max_jitter=0.03)
+        self._limiter = AsyncRateLimiter(1, min_interval=0.35, max_jitter=0.08)
+        self._full_skip_until: dict[int, float] = {}
         self._flood = TelegramFloodControl(self._limiter)
         self._seen_at: dict[int, float] = {}
         self._me_id: Optional[int] = None
@@ -791,44 +808,54 @@ class ProfileScanner:
         stars_value: Optional[int] = None
         stars_fetched = False
         stargifts_count: Optional[int] = None
-        try:
-            input_user = await self._input_user(user)
+        skip_until = self._full_skip_until.get(int(user.id), 0.0)
+        if skip_until > time.monotonic() or self._flood.cooling:
+            LOGGER.debug("GetFullUser %s: временно пропускаю (flood)", user.id)
+        else:
             try:
-                request = GetFullUserRequest(id=input_user)
-            except TypeError:
-                request = GetFullUserRequest(input_user)  # type: ignore[call-arg]
-            full = await self._flood.call(
-                lambda: self.client(request),
-                label=f"full:{user.id}",
-            )
-            stars_fetched = True
-            full_user = getattr(full, "full_user", None) or full
-            bio = getattr(full_user, "about", None) or ""
-            personal_channel_id = getattr(full_user, "personal_channel_id", None)
-            common_chats = int(getattr(full_user, "common_chats_count", 0) or 0)
-            rating = getattr(full_user, "stars_rating", None) or getattr(full, "stars_rating", None)
-            if rating is not None:
-                stars_level = getattr(rating, "level", None)
-                stars_value = getattr(rating, "stars", None)
-                if stars_level is None:
-                    stars_level = getattr(rating, "current_level", None)
-            for name in ("stargifts_count", "star_gifts_count"):
-                raw_count = getattr(full_user, name, None)
-                if raw_count is None:
-                    continue
+                input_user = await self._input_user(user)
                 try:
-                    stargifts_count = int(raw_count)
-                    break
-                except (TypeError, ValueError):
-                    continue
-            for chat in getattr(full, "chats", []) or []:
-                if isinstance(chat, Channel) and getattr(chat, "username", None):
-                    public_channels += 1
-        except UserPrivacyRestrictedError as exc:
-            LOGGER.info("GetFullUser %s: %s", user.id, exc)
-            stars_fetched = True
-        except (RPCError, asyncio.TimeoutError) as exc:
-            LOGGER.info("GetFullUser %s: %s", user.id, exc)
+                    request = GetFullUserRequest(id=input_user)
+                except TypeError:
+                    request = GetFullUserRequest(input_user)  # type: ignore[call-arg]
+                full = await self._flood.call(
+                    lambda: self.client(request),
+                    retries=1,
+                    label=f"full:{user.id}",
+                )
+                stars_fetched = True
+                full_user = getattr(full, "full_user", None) or full
+                bio = getattr(full_user, "about", None) or ""
+                personal_channel_id = getattr(full_user, "personal_channel_id", None)
+                common_chats = int(getattr(full_user, "common_chats_count", 0) or 0)
+                rating = getattr(full_user, "stars_rating", None) or getattr(full, "stars_rating", None)
+                if rating is not None:
+                    stars_level = getattr(rating, "level", None)
+                    stars_value = getattr(rating, "stars", None)
+                    if stars_level is None:
+                        stars_level = getattr(rating, "current_level", None)
+                for name in ("stargifts_count", "star_gifts_count"):
+                    raw_count = getattr(full_user, name, None)
+                    if raw_count is None:
+                        continue
+                    try:
+                        stargifts_count = int(raw_count)
+                        break
+                    except (TypeError, ValueError):
+                        continue
+                for chat in getattr(full, "chats", []) or []:
+                    if isinstance(chat, Channel) and getattr(chat, "username", None):
+                        public_channels += 1
+            except UserPrivacyRestrictedError as exc:
+                LOGGER.info("GetFullUser %s: %s", user.id, exc)
+                stars_fetched = True
+            except FloodWaitError as exc:
+                wait = int(getattr(exc, "seconds", 30) or 30)
+                self._full_skip_until[int(user.id)] = time.monotonic() + min(max(wait, 45), 180)
+                LOGGER.info("GetFullUser %s flood %ss — продавца временно пропускаю", user.id, wait)
+            except (RPCError, asyncio.TimeoutError) as exc:
+                self._full_skip_until[int(user.id)] = time.monotonic() + 45
+                LOGGER.info("GetFullUser %s: %s", user.id, exc)
 
         username = user.username
         is_premium = bool(getattr(user, "premium", False) or getattr(user, "is_premium", False))

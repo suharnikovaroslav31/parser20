@@ -125,13 +125,11 @@ def claimed_notice(claimed_by, lot: Optional[ClaimLot] = None) -> str:
     return "\n".join(lines)
 
 
-async def _mark_group_claimed(call: CallbackQuery, lot: ClaimLot, claimed_by) -> None:
-    """Карточка MATCH пропадает, остаётся только кто занял."""
-    message = call.message
-    if not isinstance(message, Message):
-        return
-    text = claimed_notice(claimed_by, lot)
+async def _replace_card(message: Message, text: str) -> None:
     try:
+        if message.photo or message.animation or message.document:
+            await message.edit_caption(caption=text, reply_markup=None, parse_mode="HTML")
+            return
         await message.edit_text(text, reply_markup=None, disable_web_page_preview=True)
         return
     except TelegramBadRequest as exc:
@@ -142,14 +140,21 @@ async def _mark_group_claimed(call: CallbackQuery, lot: ClaimLot, claimed_by) ->
         LOGGER.warning("не написал что лот занят: %s", exc)
 
 
+async def _mark_group_claimed(call: CallbackQuery, lot: ClaimLot, claimed_by) -> None:
+    """Карточка MATCH пропадает, остаётся только кто занял."""
+    message = call.message
+    if not isinstance(message, Message):
+        return
+    await _replace_card(message, claimed_notice(claimed_by, lot))
+
+
 async def _mark_already_taken(call: CallbackQuery) -> None:
     message = call.message
     if not isinstance(message, Message):
         return
-    text = f"{e('check')} <b>Лот занят</b>"
     try:
-        await message.edit_text(text, reply_markup=None, disable_web_page_preview=True)
-    except (TelegramBadRequest, TelegramForbiddenError):
+        await _replace_card(message, f"{e('check')} <b>Лот занят</b>")
+    except Exception:
         try:
             await message.edit_reply_markup(reply_markup=None)
         except (TelegramBadRequest, TelegramForbiddenError):
