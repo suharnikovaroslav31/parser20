@@ -364,7 +364,7 @@ class ProfileFilter:
             found.append(f"скрытые NFT: {len(hidden_nfts)}")
         shown = len(snapshot.unique_gifts) + len(snapshot.regular_gifts)
         total_gifts = metrics.stargifts_count
-        if total_gifts is not None and total_gifts >= 8 and total_gifts > shown + 3:
+        if total_gifts is not None and total_gifts >= 16 and total_gifts > shown + 3:
             found.append(f"гифтов {total_gifts} при витрине {shown} — прячут коллекцию")
         if snapshot.source in _MARKET_SOURCES:
             if looks_like_shell_profile(metrics):
@@ -374,7 +374,7 @@ class ProfileFilter:
             if looks_like_burner_name(metrics.first_name, metrics.last_name):
                 found.append("рандомное имя на маркете — альт перекупа")
             visible_nfts = [gift for gift in snapshot.unique_gifts if not gift.unsaved]
-            if len(visible_nfts) > 1:
+            if len(visible_nfts) > live.max_unique_gifts:
                 found.append("больше одного NFT на маркете — уже шарит")
             ask = _listing_ask(snapshot)
             floors = [gift.telegram_floor_ton for gift in (snapshot.cheap_gifts or snapshot.unique_gifts) if gift.telegram_floor_ton]

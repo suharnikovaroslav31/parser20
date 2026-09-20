@@ -126,6 +126,18 @@ class FilterTests(unittest.TestCase):
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
+    def test_two_nfts_one_listed_on_market_can_match(self) -> None:
+        extra = _gift("B-2", 3.0)
+        extra.on_resale = False
+        extra.telegram_floor_ton = 8.0
+        extra.fair_value_ton = 8.0
+        extra.market_floor_ton = None
+        listed = _gift("A-1")
+        snap = _snapshot(gifts=[listed, extra], metrics=_metrics(), price=2.0)
+        snap.cheap_gifts = [listed]
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+
     def test_skip_two_resale_flipper(self) -> None:
         gifts = [_gift("A-1"), _gift("B-2", 3.0)]
         snap = _snapshot(gifts=gifts, metrics=_metrics(), price=2.0)
@@ -198,6 +210,9 @@ class FilterTests(unittest.TestCase):
 
     def test_few_extra_gifts_still_match(self) -> None:
         snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=4), price=2.0)
+        decision = self.flt.evaluate(snap)
+        self.assertTrue(decision.matched, decision.reasons)
+        snap = _snapshot(gifts=[_gift()], metrics=_metrics(stargifts_count=10), price=2.0)
         decision = self.flt.evaluate(snap)
         self.assertTrue(decision.matched, decision.reasons)
 
@@ -500,13 +515,14 @@ class SearchDirectionTests(unittest.TestCase):
         self.assertGreaterEqual(COLLECTIONS_PER_PASS, 12)
         self.assertGreaterEqual(FULL_PER_COLLECTION, 10)
 
-    def test_people_source_skips_old_dialogs(self) -> None:
+    def test_people_source_keeps_chats_not_idle_dialogs(self) -> None:
         from core.market import LIVE_PEOPLE_SOURCES
 
         self.assertIn("live_gift_received", LIVE_PEOPLE_SOURCES)
         self.assertIn("recent_gift_peer", LIVE_PEOPLE_SOURCES)
+        self.assertIn("nft_chat", LIVE_PEOPLE_SOURCES)
+        self.assertIn("contact", LIVE_PEOPLE_SOURCES)
         self.assertNotIn("dialog", LIVE_PEOPLE_SOURCES)
-        self.assertNotIn("contact", LIVE_PEOPLE_SOURCES)
 
     def test_fresh_noob_requires_live_resale(self) -> None:
         from core.market import GiftMarketScanner
@@ -524,6 +540,16 @@ class SearchDirectionTests(unittest.TestCase):
         self.assertTrue(
             GiftMarketScanner._is_fresh_noob(
                 SimpleNamespace(source="live_gift_received", unique_gifts=[listed])
+            )
+        )
+        self.assertTrue(
+            GiftMarketScanner._is_fresh_noob(
+                SimpleNamespace(source="nft_chat", unique_gifts=[listed])
+            )
+        )
+        self.assertTrue(
+            GiftMarketScanner._is_fresh_noob(
+                SimpleNamespace(source="chat:gifts", unique_gifts=[listed])
             )
         )
 

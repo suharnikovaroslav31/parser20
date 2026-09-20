@@ -19,6 +19,7 @@ import hashlib
 import inspect
 import logging
 import os
+import re
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -73,6 +74,16 @@ try:
     from telethon.tl.functions.payments import GetUniqueStarGiftValueInfoRequest
 except ImportError:
     GetUniqueStarGiftValueInfoRequest = None  # type: ignore[misc,assignment]
+
+try:
+    from telethon.tl.functions.payments import GetUniqueStarGiftRequest
+except ImportError:
+    GetUniqueStarGiftRequest = None  # type: ignore[misc,assignment]
+
+_NFT_LINK_RE = re.compile(
+    r"(?:https?://)?(?:t\.me|telegram\.me)/nft/([A-Za-z][A-Za-z0-9]*-\d+)",
+    re.IGNORECASE,
+)
 
 
 def _user_display(user: User) -> str:
@@ -564,36 +575,38 @@ class ProfileScanner:
     async def _handle_gift_message(self, event: events.NewMessage.Event) -> None:
         message = event.message
         action = getattr(message, "action", None)
-        if action is None:
-            return
-        gift_types: tuple[type, ...] = tuple(
-            cls
-            for cls in (MessageActionStarGift, MessageActionStarGiftUnique)
-            if isinstance(cls, type)
-        )
-        is_gift_action = gift_types and isinstance(action, gift_types)
-        if not is_gift_action and "StarGift" not in type(action).__name__:
-            return
-        peer_user = await event.get_chat()
-        recipient = await self._resolve_gift_recipient(action, peer_user)
-        if recipient is not None:
-            await self._enqueue_user(recipient, "live_gift_received", force=True)
+        if action is not None:
+            gift_types: tuple[type, ...] = tuple(
+                cls
+                for cls in (MessageActionStarGift, MessageActionStarGiftUnique)
+                if isinstance(cls, type)
+            )
+            is_gift_action = gift_types and isinstance(action, gift_types)
+            if is_gift_action or "StarGift" in type(action).__name__:
+                peer_user = await event.get_chat()
+                recipient = await self._resolve_gift_recipient(action, peer_user)
+                if recipient is not None:
+                    await self._enqueue_user(recipient, "live_gift_received", force=True)
+        text = getattr(message, "message", None) or getattr(message, "raw_text", None) or ""
+        for slug in _NFT_LINK_RE.findall(str(text)):
+            await self._enqueue_from_nft_slug(slug, "nft_chat")
 
     # ------------------------------------------------------------------
     # Источники кандидатов
     # ------------------------------------------------------------------
     async def bootstrap_queue(self) -> int:
-        """Только кому только что прилетел гифт. Диалоги/контакты — старые витрины."""
+        """Получатели гифтов, ссылки t.me/nft в чатах, сиды и контакты с ресейлом."""
         enqueued = 0
         enqueued += await self._enqueue_seeds()
-        enqueued += await self._enqueue_recent_gift_recipients(dialogs=20, messages=10)
+        enqueued += await self._enqueue_recent_gift_recipients(dialogs=80, messages=20, nft_limit=20)
         enqueued += await self._enqueue_seed_chats()
-        LOGGER.info("Очередь свежих гифтов: %s профилей", enqueued)
+        enqueued += await self._enqueue_contacts(limit=40)
+        LOGGER.info("Очередь людей вокруг сессии: %s профилей", enqueued)
         return enqueued
 
     async def refresh_people_queue(self) -> int:
-        count = await self._enqueue_recent_gift_recipients(dialogs=12, messages=8)
-        LOGGER.info("Обновление свежих гифтов: +%s", count)
+        count = await self._enqueue_recent_gift_recipients(dialogs=40, messages=12, nft_limit=12)
+        LOGGER.info("Обновление чатов: +%s", count)
         return count
 
     async def drain_queue(self, *, limit: int = 160) -> AsyncIterator[ProfileSnapshot]:
@@ -688,8 +701,8 @@ class ProfileScanner:
             return None
         return entity if isinstance(entity, User) else None
 
-    async def _enqueue_contacts(self) -> int:
-        """Контакты сессии — живые люди, не витрина маркета."""
+    async def _enqueue_contacts(self, *, limit: int = 40) -> int:
+        """Контакты сессии — потом оставляем только тех, у кого NFT на ресейле."""
         try:
             result = await self._flood.call(
                 lambda: self.client(GetContactsRequest(hash=0)),
@@ -700,6 +713,8 @@ class ProfileScanner:
             return 0
         count = 0
         for user in getattr(result, "users", None) or []:
+            if count >= max(1, limit):
+                break
             if isinstance(user, User) and await self._enqueue_user(user, "contact"):
                 count += 1
         if count:
@@ -720,7 +735,7 @@ class ProfileScanner:
 
     async def _enqueue_seed_chats(self) -> int:
         count = 0
-        limit = self.settings.scan_chat_member_limit or None
+        limit = self.settings.scan_chat_member_limit or 60
         for chat_ref in self.settings.seed_chats:
             try:
                 entity = await self._flood.call(
@@ -742,25 +757,66 @@ class ProfileScanner:
                 LOGGER.warning("iter_participants %s: %s — пропускаем чат", chat_ref, exc)
         return count
 
-    async def _enqueue_recent_gift_recipients(self, *, dialogs: int = 40, messages: int = 18) -> int:
-        """Люди, которым недавно прилетел гифт в чатах сессии — не продавцы маркета."""
+    async def _enqueue_from_nft_slug(self, slug: str, source: str = "nft_chat") -> bool:
+        """Владелец лота из ссылки t.me/nft в чате."""
+        if GetUniqueStarGiftRequest is None or not slug:
+            return False
+        try:
+            request = GetUniqueStarGiftRequest(slug=slug)
+        except TypeError:
+            request = GetUniqueStarGiftRequest(slug)  # type: ignore[call-arg]
+        try:
+            result = await self._flood.call(
+                lambda: self.client(request),
+                retries=2,
+                label=f"nftlink:{slug}",
+            )
+        except (FloodWaitError, RPCError, asyncio.TimeoutError, TypeError, ValueError):
+            return False
+        gift = getattr(result, "gift", None)
+        owner = getattr(gift, "owner_id", None) if gift is not None else None
+        owner_id = getattr(owner, "user_id", None)
+        if owner_id is None and isinstance(owner, int):
+            owner_id = owner
+        if not owner_id:
+            return False
+        uid = int(owner_id)
+        for user in getattr(result, "users", None) or []:
+            if isinstance(user, User) and int(user.id) == uid:
+                return await self._enqueue_user(user, source, force=True)
+        return False
+
+    async def _enqueue_recent_gift_recipients(self, *, dialogs: int = 40, messages: int = 18, nft_limit: int = 12) -> int:
+        """Гифты и ссылки t.me/nft в чатах сессии."""
         count = 0
+        slugs_used = 0
+        seen_slugs: set[str] = set()
         try:
             async for dialog in self.client.iter_dialogs(limit=dialogs):
                 entity = dialog.entity
                 try:
                     async for message in self.client.iter_messages(entity, limit=messages):
                         action = getattr(message, "action", None)
-                        if action is None or "StarGift" not in type(action).__name__:
+                        if action is not None and "StarGift" in type(action).__name__:
+                            recipient = await self._resolve_gift_recipient(action, entity)
+                            if recipient is not None and await self._enqueue_user(recipient, "recent_gift_peer"):
+                                count += 1
+                        text = getattr(message, "message", None) or getattr(message, "raw_text", None) or ""
+                        if slugs_used >= nft_limit:
                             continue
-                        recipient = await self._resolve_gift_recipient(action, entity)
-                        if recipient is not None and await self._enqueue_user(recipient, "recent_gift_peer"):
-                            count += 1
+                        for slug in _NFT_LINK_RE.findall(str(text)):
+                            key = slug.lower()
+                            if key in seen_slugs or slugs_used >= nft_limit:
+                                continue
+                            seen_slugs.add(key)
+                            if await self._enqueue_from_nft_slug(slug, "nft_chat"):
+                                count += 1
+                                slugs_used += 1
                 except (RPCError, TypeError, ValueError):
                     continue
         except RPCError as exc:
             LOGGER.warning("недавние гифты: %s", exc)
-        LOGGER.info("Недавние гифты в чатах: %s людей", count)
+        LOGGER.info("Недавние гифты и nft-ссылки в чатах: %s людей", count)
         return count
 
     async def _enqueue_dialogs(self, limit: int = 200) -> int:

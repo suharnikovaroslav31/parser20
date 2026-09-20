@@ -1,6 +1,6 @@
 """
-Источники лохов: свежие NEW-лоты Telegram не у текущего флора.
-Флор = дешёвая страница маркета, это перекупы. MRKT/Tonnel не трогаем.
+Источники лохов: NEW Telegram, чаты сессии, MRKT/Tonnel/Portals/Getgems.
+Флор = дешёвая страница маркета, это перекупы.
 """
 
 from __future__ import annotations
@@ -37,15 +37,25 @@ from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
 CHEAP_PAGES = 0
-NEW_PAGES = 1
+NEW_PAGES = 2
 FLOOR_SAMPLE = 15
 MAX_NOOB_COLLECTIONS = 400
-COLLECTIONS_PER_PASS = 16
-FULL_PER_COLLECTION = 12
+COLLECTIONS_PER_PASS = 24
+FULL_PER_COLLECTION = 20
 WAREHOUSE_SAVED_GIFTS = 24
-PEOPLE_PER_PASS = 40
-EXTERNAL_LIMIT = 25
-LIVE_PEOPLE_SOURCES = frozenset({"live_gift_received", "live_gift_action", "recent_gift_peer"})
+PEOPLE_PER_PASS = 80
+EXTERNAL_LIMIT = 20
+LIVE_PEOPLE_SOURCES = frozenset(
+    {
+        "live_gift_received",
+        "live_gift_action",
+        "recent_gift_peer",
+        "nft_chat",
+        "seed_username",
+        "seed_id",
+        "contact",
+    }
+)
 _SLUG_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*-\d+$")
 _USER_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 
@@ -205,6 +215,7 @@ class GiftMarketScanner:
         self._full_left = 0
         self._people_bootstrapped = False
         self._people_misses = 0
+        self._external_cycle = 0
         self._seller_cache: dict[int, tuple[AccountMetrics, list[UniqueGift], list]] = {}
         self._username_cache: dict[str, Optional[User]] = {}
         self._catalog_offset = 0
@@ -312,7 +323,7 @@ class GiftMarketScanner:
             if not await self.scanner._flood.ensure_connected():
                 LOGGER.error("Telegram нет связи — этот проход пропускаю")
                 return
-            LOGGER.info("лохи = NEW Telegram не у флора, перекупов у флора не трогаю")
+            LOGGER.info("лохи = Telegram NEW + чаты + внешние маркеты, не у флора")
             async for snapshot in self._iter_source("telegram-resale", self._iter_telegram_resale()):
                 telegram_count += 1
                 yield snapshot
@@ -327,11 +338,14 @@ class GiftMarketScanner:
                 self._skipped_cap,
                 self._skipped_nouser,
             )
+            if await self._wait_short_flood():
+                async for snapshot in self._iter_external_markets():
+                    yield snapshot
             people_count = 0
             async for snapshot in self._iter_source("people", self._iter_people()):
                 people_count += 1
                 yield snapshot
-            LOGGER.info("Свежие гифты вокруг сессии: снимков %s", people_count)
+            LOGGER.info("Люди из чатов: снимков %s", people_count)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -352,9 +366,6 @@ class GiftMarketScanner:
         if not self._people_bootstrapped:
             await self.scanner.bootstrap_queue()
             self._people_bootstrapped = True
-        elif self._people_misses >= 1:
-            LOGGER.info("people: пусто, этот круг пропускаю — сначала NEW Telegram")
-            return
         else:
             await self.scanner.refresh_people_queue()
         yielded = 0
@@ -368,10 +379,31 @@ class GiftMarketScanner:
             self._people_misses = 0
 
     @staticmethod
+    def _is_people_source(source: str) -> bool:
+        name = source or ""
+        return name in LIVE_PEOPLE_SOURCES or name.startswith("chat:")
+
+    @staticmethod
     def _is_fresh_noob(snapshot: ProfileSnapshot) -> bool:
-        if snapshot.source not in LIVE_PEOPLE_SOURCES:
+        if not GiftMarketScanner._is_people_source(getattr(snapshot, "source", "") or ""):
             return False
         return any(gift.on_resale for gift in snapshot.unique_gifts)
+
+    async def _iter_external_markets(self) -> AsyncIterator[ProfileSnapshot]:
+        sources = (
+            ("mrkt", self._iter_mrkt_listings),
+            ("tonnel", self._iter_tonnel_listings),
+            ("portal", self._iter_portal_listings),
+            ("getgems", self._iter_getgems_listings),
+        )
+        start = self._external_cycle % len(sources)
+        batch = [sources[start], sources[(start + 1) % len(sources)]]
+        self._external_cycle += 2
+        for name, factory in batch:
+            if self._stopping() or not await self._wait_short_flood():
+                return
+            async for snapshot in self._iter_source(name, factory()):
+                yield snapshot
 
     async def _iter_telegram_resale(self) -> AsyncIterator[ProfileSnapshot]:
         if not self.scanner.client.is_connected():
@@ -734,8 +766,8 @@ class GiftMarketScanner:
         ton_usd: float,
     ) -> AsyncIterator[ProfileSnapshot]:
         """Лоты внешних маркетов → slug/username → публичный профиль Telegram."""
-        if self.scanner._flood.cooling:
-            LOGGER.info("%s: Telegram flood — внешние лоты в этом круге пропускаю", source)
+        if not await self._wait_short_flood():
+            LOGGER.info("%s: Telegram flood — внешние лоты позже", source)
             return
         for item in items[:EXTERNAL_LIMIT]:
             if self._stopping():
@@ -748,7 +780,9 @@ class GiftMarketScanner:
                 continue
             http_price = marketplace_http_price(item)
             snapshot = None
-            if slug and not self.scanner._flood.cooling:
+            if slug:
+                if not await self._wait_short_flood():
+                    return
                 try:
                     fetched = await self._unique_star_gift(slug)
                 except RPCError as exc:
@@ -772,8 +806,9 @@ class GiftMarketScanner:
                         self.tracker.mark(key)
                         continue
                     self._tg_priced += 1
+                    collection_id = int(getattr(raw, "gift_id", 0) or getattr(raw, "id", 0) or 0)
                     snapshot = await self._snapshot_from_telegram_lot(
-                        raw, users, price, ton_usd, source=source
+                        raw, users, price, ton_usd, source=source, collection_id=collection_id
                     )
             if snapshot is None:
                 user = await self._user_from_username(marketplace_username(item))
@@ -814,7 +849,7 @@ class GiftMarketScanner:
             number=int(number) if number is not None else None,
             on_resale=True,
             market_floor_ton=price,
-            telegram_floor_ton=price,
+            telegram_floor_ton=None,
             market_source=source,
             seller_id=user.id,
             seller_name=user.username,
