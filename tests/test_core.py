@@ -498,7 +498,7 @@ class SearchDirectionTests(unittest.TestCase):
         self.assertLessEqual(NEW_PAGES, 2)
         self.assertGreaterEqual(FLOOR_SAMPLE, 10)
         self.assertLess(COLLECTIONS_PER_PASS, MAX_NOOB_COLLECTIONS)
-        self.assertGreaterEqual(COLLECTIONS_PER_PASS, 40)
+        self.assertGreaterEqual(COLLECTIONS_PER_PASS, 12)
 
     def test_people_source_skips_old_dialogs(self) -> None:
         from core.market import LIVE_PEOPLE_SOURCES
@@ -526,6 +526,16 @@ class SearchDirectionTests(unittest.TestCase):
                 SimpleNamespace(source="live_gift_received", unique_gifts=[listed])
             )
         )
+
+    def test_empty_market_name_is_not_flipper(self) -> None:
+        from core.market import GiftMarketScanner
+
+        blank = SimpleNamespace(first_name="", last_name="")
+        latin = SimpleNamespace(first_name="John", last_name="Smith")
+        rus = SimpleNamespace(first_name="Иван", last_name="")
+        self.assertFalse(GiftMarketScanner._market_seller_is_flipper(blank, source="tg_market"))
+        self.assertTrue(GiftMarketScanner._market_seller_is_flipper(latin, source="tg_market"))
+        self.assertFalse(GiftMarketScanner._market_seller_is_flipper(rus, source="tg_market"))
 
     def test_gift_action_prefers_recipient_peer(self) -> None:
         from core.parser import ProfileScanner

@@ -12,7 +12,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, Optional
 
-from telethon.errors import RPCError
+from telethon.errors import FloodWaitError, RPCError
 from telethon.tl.functions.payments import GetResaleStarGiftsRequest, GetStarGiftsRequest
 from telethon.tl.types import PeerUser, User
 
@@ -40,7 +40,7 @@ CHEAP_PAGES = 0
 NEW_PAGES = 1
 FLOOR_SAMPLE = 15
 MAX_NOOB_COLLECTIONS = 400
-COLLECTIONS_PER_PASS = 80
+COLLECTIONS_PER_PASS = 16
 PEOPLE_PER_PASS = 40
 EXTERNAL_LIMIT = 25
 LIVE_PEOPLE_SOURCES = frozenset({"live_gift_received", "live_gift_action", "recent_gift_peer"})
@@ -211,13 +211,31 @@ class GiftMarketScanner:
             LOGGER.exception("%s упал — иду к следующему источнику", name)
 
     def _seller_from_users(self, owner_id: Optional[int], users: dict[int, User]) -> Optional[User]:
-        """Только пользователи из ответа маркета. Без get_entity по ID."""
+        """Продавец из result.users, в том числе min-юзер без имени."""
         if not owner_id:
             return None
-        user = users.get(int(owner_id))
+        uid = int(owner_id)
+        user = users.get(uid)
+        if user is None:
+            for candidate in users.values():
+                if int(getattr(candidate, "id", 0) or 0) == uid:
+                    user = candidate
+                    break
         if user is None or user.bot:
             return None
         return user
+
+    @staticmethod
+    def _market_seller_is_flipper(user: Optional[User], *, source: str) -> bool:
+        if source != "tg_market" or user is None:
+            return False
+        first = user.first_name or ""
+        last = user.last_name or ""
+        if not first.strip() and not last.strip():
+            return False
+        if looks_like_burner_name(first, last):
+            return True
+        return not name_has_cyrillic(first, last)
 
     def _lot_key(self, source: str, slug: str, extra: str = "") -> str:
         token = (slug or extra or "").strip()
@@ -355,6 +373,11 @@ class GiftMarketScanner:
                 raise
             except Exception as exc:
                 LOGGER.warning("resale %s (%s): %s", title, gift_id, exc)
+                if self.scanner._flood.cooling:
+                    left = max(0.0, self.scanner._flood.cool_until - time.monotonic())
+                    LOGGER.info("Telegram flood %.0fs — пауза, каталог не жгу", left)
+                    await asyncio.sleep(min(max(left, 3.0), 8.0))
+                    return
             if index % 8 == 0:
                 async for snapshot in self._drain_ready_people(limit=10):
                     yield snapshot
@@ -386,6 +409,8 @@ class GiftMarketScanner:
         known = self._collection_floor.get(int(gift_id))
         if known is not None:
             return known
+        if self.scanner._flood.cooling:
+            return None
         try:
             result = await self.scanner._flood.call(
                 lambda: self.scanner.client(
@@ -399,6 +424,8 @@ class GiftMarketScanner:
                 retries=1,
                 label=f"resale:{gift_id}:floor",
             )
+        except FloodWaitError:
+            raise
         except (RPCError, asyncio.TimeoutError) as exc:
             LOGGER.info("флор %s: %s", title, exc)
             return None
@@ -497,15 +524,6 @@ class GiftMarketScanner:
         if unique.telegram_floor_ton and collection_id:
             self._collection_floor[int(collection_id)] = unique.telegram_floor_ton
 
-    def _market_seller_is_flipper(self, user: Optional[User], *, source: str) -> bool:
-        if source != "tg_market" or user is None:
-            return False
-        first = user.first_name or ""
-        last = user.last_name or ""
-        if not name_has_cyrillic(first, last):
-            return True
-        return looks_like_burner_name(first, last)
-
     async def _snapshot_from_telegram_lot(
         self,
         raw: Any,
@@ -533,7 +551,10 @@ class GiftMarketScanner:
         unique.seller_id = owner_id
         unique.seller_name = getattr(raw, "owner_name", None)
         user = self._seller_from_users(owner_id, users)
-        if user is None or self._market_seller_is_flipper(user, source=source):
+        if user is None:
+            self._skipped_smart += 1
+            return None
+        if self._market_seller_is_flipper(user, source=source):
             self._skipped_smart += 1
             return None
         known_floor = self._collection_floor.get(int(collection_id)) if collection_id else None
