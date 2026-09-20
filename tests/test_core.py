@@ -12,7 +12,6 @@ from core.mammoth import (
     RATING_LEVEL,
     SeenPeople,
     at_floor,
-    dumb_price,
     is_burner,
     is_mammoth,
     listing_price_ton,
@@ -50,7 +49,7 @@ def _metrics(**kwargs) -> AccountMetrics:
     return AccountMetrics(**base)
 
 
-def _gift(slug: str = "LolPop-1", *, unsaved: bool = False, price: float = 8.0, on_resale: bool = True) -> UniqueGift:
+def _gift(slug: str = "LolPop-1", *, unsaved: bool = False, price: float = 6.5, on_resale: bool = True) -> UniqueGift:
     return UniqueGift(
         slug=slug,
         title="Lol Pop",
@@ -63,40 +62,45 @@ def _gift(slug: str = "LolPop-1", *, unsaved: bool = False, price: float = 8.0, 
 
 class MammothJudgeTests(unittest.TestCase):
     def test_clean_mammoth_matches(self) -> None:
-        v = is_mammoth(_metrics(), [_gift()], 8.0, floor=5.0)
+        v = is_mammoth(_metrics(), [_gift()], 6.5, floor=5.0)
         self.assertTrue(v.ok, v.reasons)
 
-    def test_near_floor_skips(self) -> None:
-        v = is_mammoth(_metrics(), [_gift(price=5.5)], 5.5, floor=5.0)
+    def test_at_floor_skips(self) -> None:
+        v = is_mammoth(_metrics(), [_gift(price=5.2)], 5.2, floor=5.0)
         self.assertFalse(v.ok)
         self.assertTrue(any("шарит" in r for r in v.reasons))
 
+    def test_slight_off_floor_ok(self) -> None:
+        v = is_mammoth(_metrics(), [_gift(price=5.8)], 5.8, floor=5.0)
+        self.assertTrue(v.ok, v.reasons)
+
     def test_rich_profile_skips(self) -> None:
-        v = is_mammoth(
-            _metrics(username="ivanov", is_premium=True, bio="привет", has_photo=True),
-            [_gift()],
-            8.0,
-            floor=5.0,
-        )
+        rich = _metrics(username="ivanov", is_premium=True, bio="привет", has_photo=True, personal_channel_id=1)
+        self.assertGreater(profile_richness(rich), MAX_RICHNESS)
+        v = is_mammoth(rich, [_gift()], 6.5, floor=5.0)
         self.assertFalse(v.ok)
-        self.assertTrue(any("шарит" in r or "профиль" in r for r in v.reasons))
-        self.assertGreater(profile_richness(_metrics(username="ivanov", is_premium=True, bio="x", has_photo=True)), MAX_RICHNESS)
 
     def test_hidden_nft_skips(self) -> None:
-        v = is_mammoth(_metrics(), [_gift(), _gift("X-2", unsaved=True)], 8.0, floor=5.0)
+        v = is_mammoth(_metrics(), [_gift(), _gift("X-2", unsaved=True)], 6.5, floor=5.0)
         self.assertFalse(v.ok)
         self.assertTrue(any("скрыт" in r for r in v.reasons))
 
     def test_rating_not_one_skips(self) -> None:
-        v = is_mammoth(_metrics(stars_rating_level=2), [_gift()], 8.0, floor=5.0)
+        v = is_mammoth(_metrics(stars_rating_level=2), [_gift()], 6.5, floor=5.0)
         self.assertFalse(v.ok)
 
     def test_too_many_nft_skips(self) -> None:
-        v = is_mammoth(_metrics(), [_gift("A-1"), _gift("B-2"), _gift("C-3")], 8.0, floor=5.0)
+        gifts = [_gift("A-1"), _gift("B-2"), _gift("C-3"), _gift("D-4")]
+        v = is_mammoth(_metrics(), gifts, 6.5, floor=5.0)
         self.assertFalse(v.ok)
 
+    def test_three_nft_ok(self) -> None:
+        gifts = [_gift("A-1"), _gift("B-2", on_resale=False), _gift("C-3", on_resale=False)]
+        v = is_mammoth(_metrics(), gifts, 6.5, floor=5.0)
+        self.assertTrue(v.ok, v.reasons)
+
     def test_two_on_resale_skips(self) -> None:
-        v = is_mammoth(_metrics(), [_gift("A-1"), _gift("B-2")], 8.0, floor=5.0)
+        v = is_mammoth(_metrics(), [_gift("A-1"), _gift("B-2")], 6.5, floor=5.0)
         self.assertFalse(v.ok)
         self.assertTrue(any("флиппер" in r for r in v.reasons))
 
@@ -106,30 +110,28 @@ class MammothJudgeTests(unittest.TestCase):
         v = is_mammoth(_metrics(), [_gift()], FLOOR_MAX, floor=5.0)
         self.assertFalse(v.ok)
 
-    def test_personal_channel_skips(self) -> None:
-        v = is_mammoth(_metrics(personal_channel_id=1), [_gift()], 8.0, floor=5.0)
-        self.assertFalse(v.ok)
+    def test_personal_channel_alone_ok(self) -> None:
+        v = is_mammoth(_metrics(personal_channel_id=1), [_gift()], 6.5, floor=5.0)
+        self.assertTrue(v.ok, v.reasons)
 
     def test_foreign_name_skips(self) -> None:
-        v = is_mammoth(_metrics(first_name="小明", lang_code=None), [_gift()], 8.0, floor=5.0)
+        v = is_mammoth(_metrics(first_name="小明", lang_code=None), [_gift()], 6.5, floor=5.0)
         self.assertFalse(v.ok)
 
     def test_latin_ru_still_ok(self) -> None:
-        v = is_mammoth(_metrics(first_name="Dima", lang_code="ru"), [_gift()], 8.0, floor=5.0)
+        v = is_mammoth(_metrics(first_name="Dima", lang_code="ru"), [_gift()], 6.5, floor=5.0)
         self.assertTrue(v.ok, v.reasons)
 
     def test_shell_skips(self) -> None:
-        v = is_mammoth(_metrics(has_photo=False, username=None, bio=""), [_gift()], 8.0, floor=5.0)
+        v = is_mammoth(_metrics(has_photo=False, username=None, bio=""), [_gift()], 6.5, floor=5.0)
         self.assertFalse(v.ok)
 
 
 class HelperTests(unittest.TestCase):
     def test_floor_band(self) -> None:
         self.assertTrue(at_floor(5.0, 5.0))
-        self.assertTrue(at_floor(5.7, 5.0))  # +14% — ещё шарит
-        self.assertFalse(at_floor(6.2, 5.0))  # +24%
-        self.assertTrue(dumb_price(6.2, 5.0))
-        self.assertFalse(dumb_price(5.5, 5.0))
+        self.assertTrue(at_floor(5.3, 5.0))
+        self.assertFalse(at_floor(5.8, 5.0))
 
     def test_burner(self) -> None:
         self.assertTrue(is_burner("Ywnnwkan", "Absoanwbw"))
@@ -145,7 +147,7 @@ class HelperTests(unittest.TestCase):
         self.assertAlmostEqual(listing_price_ton(gift), 2.5)
 
     def test_build(self) -> None:
-        self.assertEqual(BUILD, "20260920-23")
+        self.assertEqual(BUILD, "20260920-24")
         self.assertEqual(RATING_LEVEL, 1)
 
 

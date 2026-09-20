@@ -1,9 +1,8 @@
 """
 Новый охотник: только мамонты / лохи / новички.
 
-Источник один — свежие NEW-лоты Telegram Gift Marketplace.
-Нужны те, кто НЕ шарит: ур.1, бедный профиль, 1–2 NFT, цена явно мимо флора.
-Одного человека шлём один раз.
+Источник — свежие NEW-лоты Telegram Gift Marketplace (мимо точного флора).
+Лох = Stars ур.1, мало NFT, не перекуп/флиппер. Одного человека — один раз.
 """
 
 from __future__ import annotations
@@ -36,17 +35,15 @@ FLOOR_MIN = 0.0
 FLOOR_MAX = 10.0
 RATING_LEVEL = 1
 MIN_NFT = 1
-MAX_NFT = 2
-# До 18% от флора = знает рынок. Берём заметный промах цены.
-SMART_FLOOR_BAND = 0.18
-MIN_OVERPRICE = 1.18  # ask >= floor * 1.18
-MAX_RICHNESS = 45  # premium+юзернейм+фото = шарит; просто имя+фото — ок
-MAX_STARGIFTS = 8
-MAX_STARS_IN_LVL1 = 500  # внутри ур.1 ещё норм; тысячи = уже крутит
-COLLECTIONS_PER_PASS = 24
-NEW_PAGES = 2
+MAX_NFT = 3
+# Только у самого флора = знает рынок. Остальные off-floor в 0–10 смотрим.
+FLOOR_BAND = 0.08
+MAX_RICHNESS = 55
+MAX_STARGIFTS = 15
+COLLECTIONS_PER_PASS = 48
+NEW_PAGES = 3
 FLOOR_SAMPLE = 15
-FULL_PER_COLLECTION = 18
+FULL_PER_COLLECTION = 40
 NANOTON = 1_000_000_000
 SEEN_PATH = Path("data/seen_mammoths.json")
 SEEN_TTL = 7 * 24 * 3600
@@ -129,22 +126,15 @@ def listing_price_ton(gift: Any, *, stars_usd: float = 0.013, ton_usd: float = 5
     return None
 
 
-def at_floor(ask: Optional[float], floor: Optional[float], *, band: float = SMART_FLOOR_BAND) -> bool:
-    """Цена у флора / чуть выше — знает рынок, не лох."""
+def at_floor(ask: Optional[float], floor: Optional[float], *, band: float = FLOOR_BAND) -> bool:
+    """Цена у флора — знает рынок, не лох."""
     if ask is None or floor is None or floor <= 0 or ask <= 0:
         return False
     return abs(ask - floor) / floor <= band
 
 
-def dumb_price(ask: Optional[float], floor: Optional[float]) -> bool:
-    """Явный промах: заметно дороже флора (не знает, сколько стоит)."""
-    if ask is None or floor is None or floor <= 0 or ask <= 0:
-        return False
-    return ask >= floor * MIN_OVERPRICE
-
-
 def profile_richness(metrics: AccountMetrics) -> int:
-    """Насколько профиль «живой». У лоха низкий; у тех, кто шарит — высокий."""
+    """Насколько профиль «живой». У лоха низкий/средний; у перекупа — высокий."""
     score = 0
     if metrics.username:
         score += 20
@@ -247,8 +237,6 @@ def is_mammoth(
         fail.append("рандомное имя")
     if looks_like_shell(metrics):
         fail.append("пустой акк — альт")
-    if metrics.personal_channel_id:
-        fail.append("личный канал")
     if _TRADER_NICK.search(metrics.username or ""):
         fail.append("юзернейм перекупа")
     if _RESELLER_BIO.search(metrics.bio or ""):
@@ -258,11 +246,6 @@ def is_mammoth(
         fail.append(f"профиль шарит {richness} > {MAX_RICHNESS}")
     if metrics.stargifts_count is not None and metrics.stargifts_count > MAX_STARGIFTS:
         fail.append(f"гифтов {metrics.stargifts_count} > {MAX_STARGIFTS}")
-    if (
-        metrics.stars_rating_stars is not None
-        and metrics.stars_rating_stars > MAX_STARS_IN_LVL1
-    ):
-        fail.append(f"stars {metrics.stars_rating_stars} — уже крутит")
     hidden = [g for g in unique if g.unsaved]
     if hidden:
         fail.append(f"скрытые NFT: {len(hidden)}")
@@ -282,11 +265,8 @@ def is_mammoth(
         fail.append(f"рейтинг ур.{level} ≠ {RATING_LEVEL}")
     if ask < FLOOR_MIN or ask >= FLOOR_MAX:
         fail.append(f"цена {ask:g} вне 0–10")
-    if floor is not None:
-        if at_floor(ask, floor):
-            fail.append(f"цена у флора {ask:g}≈{floor:g} — шарит")
-        elif not dumb_price(ask, floor):
-            fail.append(f"цена близко к флору {ask:g}/{floor:g} — шарит")
+    if floor is not None and at_floor(ask, floor):
+        fail.append(f"цена у флора {ask:g}≈{floor:g} — шарит")
     if fail:
         return MammothVerdict(False, fail)
     return MammothVerdict(
@@ -368,11 +348,10 @@ class MammothHunter:
             LOGGER.error("нет Telegram — проход skip")
             return
         LOGGER.info(
-            "охота на лохов: NEW Telegram, ур.%s, NFT %s–%s, цена ≥%.0f%% флора, профиль ≤%s",
+            "охота на лохов: NEW Telegram, ур.%s, NFT %s–%s, мимо флора, профиль ≤%s",
             RATING_LEVEL,
             MIN_NFT,
             MAX_NFT,
-            MIN_OVERPRICE * 100,
             MAX_RICHNESS,
         )
         matched = 0
@@ -461,14 +440,13 @@ class MammothHunter:
             return None
         floor = min(prices)
         self._floors[gift_id] = floor
-        LOGGER.info("флор %s = %.2f — беру только явный промах (≥%.0f%%)", title, floor, MIN_OVERPRICE * 100)
+        LOGGER.info("флор %s = %.2f — беру мимо флора (±%.0f%%)", title, floor, FLOOR_BAND * 100)
         return floor
 
     async def _scan_collection(self, gift_id: int, title: str) -> AsyncIterator[FilterDecision]:
         floor = await self._learn_floor(gift_id, title)
-        if floor is None or floor * MIN_OVERPRICE >= FLOOR_MAX:
-            if floor is not None:
-                LOGGER.info("коллекция %s: флор %.2f — в окне 0–10 нет промаха, skip", title, floor)
+        if floor is not None and floor >= FLOOR_MAX:
+            LOGGER.info("коллекция %s: флор %.2f ≥ %.0f — skip", title, floor, FLOOR_MAX)
             return
         left = FULL_PER_COLLECTION
         offset = ""
@@ -497,7 +475,7 @@ class MammothHunter:
                 price = listing_price_ton(raw, stars_usd=self.settings.stars_usd)
                 if price is None or price < FLOOR_MIN or price >= FLOOR_MAX:
                     continue
-                if floor is None or at_floor(price, floor) or not dumb_price(price, floor):
+                if floor is not None and at_floor(price, floor):
                     continue
                 owner_id = lot_owner_id(raw)
                 if owner_id and self.seen.seen(owner_id):
@@ -672,10 +650,6 @@ class MammothHunter:
                 metrics.stars_rating_level != RATING_LEVEL
                 or profile_richness(metrics) > MAX_RICHNESS
                 or (metrics.stargifts_count is not None and metrics.stargifts_count > MAX_STARGIFTS)
-                or (
-                    metrics.stars_rating_stars is not None
-                    and metrics.stars_rating_stars > MAX_STARS_IN_LVL1
-                )
             ):
                 return None
         else:
@@ -686,12 +660,6 @@ class MammothHunter:
                 self._seller_cache[uid] = (metrics, [])
                 return None
             if metrics.stargifts_count is not None and metrics.stargifts_count > MAX_STARGIFTS:
-                self._seller_cache[uid] = (metrics, [])
-                return None
-            if (
-                metrics.stars_rating_stars is not None
-                and metrics.stars_rating_stars > MAX_STARS_IN_LVL1
-            ):
                 self._seller_cache[uid] = (metrics, [])
                 return None
             if profile_richness(metrics) > MAX_RICHNESS:
