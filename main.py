@@ -1,8 +1,8 @@
 """
 TG-Gifts — новый парсер мамонтов.
 
-Оставляет вход в аккаунт (Telethon). Ищет только лохов: NEW Telegram,
-рейтинг 1, 1–2 NFT, 0–10 TON, без скрытых, без перекупов.
+Оставляет вход в аккаунт (Telethon). Ищет только лохов-новичков: NEW Telegram,
+рейтинг 1, бедный профиль, 1–2 NFT, цена явно мимо флора, без перекупов.
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ class MammothApp:
         await self.logger_bot.probe()
         await self.logger_bot.announce_build(BUILD, self.settings.admin_id)
         LOGGER.info(
-            "лог-группа %s | мамонт = ур.1 · NFT 1–2 · 0–10 TON · без скрытых",
+            "лог-группа %s | лох = ур.1 · бедный профиль · цена ≥130%% флора · без флипперов",
             self.logger_bot.log_group_id,
         )
 

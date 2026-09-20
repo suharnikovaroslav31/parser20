@@ -327,7 +327,7 @@ class GiftLogger:
     async def announce_build(self, build: str, admin_id: int) -> None:
         text = (
             f"{e('lightning')} <b>сборка</b> <code>{_esc(build)}</code> запущена\n"
-            f"лохи = полученные гифты, рынок только явный промах по цене"
+            f"лохи = новички с промахом цены, не те кто шарит рынок"
         )
         sent = 0
         seen: set[int] = set()

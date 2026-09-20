@@ -15,10 +15,10 @@ from config import Settings
 
 LOGGER = logging.getLogger("tg_gifts.runtime")
 DEFAULT_PATH = Path("data/filters.json")
-SCHEMA_VERSION = 10
-BUILD = "20260920-20"
+SCHEMA_VERSION = 12
+BUILD = "20260920-22"
 
-# Мамонт = русский, ур.1, 1–2 NFT, 0–10 TON.
+# Лох = новичок: русский, ур.1, бедный профиль, 1–2 NFT, цена явно мимо флора.
 ORIGINAL_FILTERS: dict[str, Any] = {
     "floor_min_ton": 0.0,
     "floor_max_ton": 10.0,
