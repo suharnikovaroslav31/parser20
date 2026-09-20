@@ -341,9 +341,8 @@ class GiftMarketScanner:
             if self.scanner._flood.cooling:
                 left = max(0.0, self.scanner._flood.cool_until - time.monotonic())
                 if left > 0:
-                    LOGGER.info("Telegram flood %.1fs — коллекцию пропускаю, жду не больше 4с", left)
-                    await asyncio.sleep(min(left, 4.0))
-                    continue
+                    LOGGER.info("Telegram flood %.1fs — жду, потом продолжаю обход", left)
+                    await asyncio.sleep(min(left, 8.0))
             gift_id = int(getattr(base, "id", 0) or 0)
             title = str(getattr(base, "title", "") or gift_id)
             if not gift_id:
@@ -357,8 +356,8 @@ class GiftMarketScanner:
                 raise
             except Exception as exc:
                 LOGGER.warning("resale %s (%s): %s", title, gift_id, exc)
-                if self.scanner._flood.cooling:
-                    continue
+            if index > 1:
+                await asyncio.sleep(0.6)
             if index % 8 == 0:
                 async for snapshot in self._drain_ready_people(limit=10):
                     yield snapshot

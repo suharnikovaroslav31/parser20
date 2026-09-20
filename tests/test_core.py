@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import tempfile
+import time
 import unittest
+from pathlib import Path
 from typing import Optional
 from types import SimpleNamespace
 
@@ -529,8 +532,61 @@ class BuildTests(unittest.TestCase):
     def test_build_id(self) -> None:
         from core.runtime import BUILD
 
-        self.assertTrue(BUILD.startswith("20260917-"))
-        self.assertGreaterEqual(BUILD, "20260917-11")
+        self.assertRegex(BUILD, r"^20\d{6}-\d+$")
+
+
+class ClaimCardTests(unittest.TestCase):
+    def test_claimed_notice_has_no_custom_emoji(self) -> None:
+        from bot.claims import ClaimLot, claimed_notice
+
+        lot = ClaimLot(
+            token="abc",
+            title="Plush Pepe",
+            slug="PlushPepe-1",
+            number=1,
+            price_ton=4.5,
+            source="tg_market",
+            seller_id=1,
+            seller_name="Ivan",
+            seller_username="ivan",
+            nft_link="https://t.me/nft/PlushPepe-1",
+            getgems_link="",
+            rating=1,
+            created=0,
+        )
+        who = SimpleNamespace(full_name="Антон", username="anton", id=2)
+        text = claimed_notice(who, lot)
+        self.assertNotIn("tg-emoji", text)
+        self.assertIn("Лот занят", text)
+        self.assertIn("Plush Pepe", text)
+
+    def test_claim_store_survives_reload(self) -> None:
+        from bot.claims import ClaimLot, ClaimStore
+
+        folder = Path(tempfile.mkdtemp())
+        path = folder / "claims.json"
+        store = ClaimStore(path)
+        lot = ClaimLot(
+            token="deadbeef",
+            title="Pepe",
+            slug="Pepe-1",
+            number=1,
+            price_ton=1.0,
+            source="tg_market",
+            seller_id=9,
+            seller_name="A",
+            seller_username=None,
+            nft_link="",
+            getgems_link="",
+            rating=1,
+            created=time.time(),
+        )
+        store.put(lot)
+        taken = store.take("deadbeef")
+        self.assertIsNotNone(taken)
+        again = ClaimStore(path)
+        self.assertTrue(again.was_claimed("deadbeef"))
+        self.assertIsNone(again.get("deadbeef"))
 
 
 if __name__ == "__main__":

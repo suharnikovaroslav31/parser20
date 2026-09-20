@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Optional
 
 from aiogram import F, Router
@@ -18,6 +20,7 @@ from bot.emoji import e, kb_icon
 
 LOGGER = logging.getLogger("tg_gifts.claims")
 TTL_SEC = 6 * 3600
+CLAIMS_PATH = Path("data/claims.json")
 
 
 @dataclass
@@ -38,12 +41,17 @@ class ClaimLot:
 
 
 class ClaimStore:
-    def __init__(self) -> None:
+    def __init__(self, path: Path = CLAIMS_PATH) -> None:
+        self.path = path
         self._items: dict[str, ClaimLot] = {}
+        self._claimed: dict[str, float] = {}
+        self._load()
 
     def put(self, lot: ClaimLot) -> str:
         self._purge()
         self._items[lot.token] = lot
+        self._claimed.pop(lot.token, None)
+        self._save()
         return lot.token
 
     def get(self, token: str) -> Optional[ClaimLot]:
@@ -52,13 +60,78 @@ class ClaimStore:
 
     def take(self, token: str) -> Optional[ClaimLot]:
         self._purge()
-        return self._items.pop(token, None)
+        lot = self._items.pop(token, None)
+        if lot is not None:
+            self._claimed[token] = time.time()
+            self._save()
+        return lot
+
+    def was_claimed(self, token: str) -> bool:
+        self._purge()
+        return token in self._claimed
 
     def _purge(self) -> None:
         now = time.time()
         dead = [key for key, item in self._items.items() if now - item.created > TTL_SEC]
         for key in dead:
             self._items.pop(key, None)
+        dead_claimed = [key for key, stamped in self._claimed.items() if now - stamped > TTL_SEC]
+        for key in dead_claimed:
+            self._claimed.pop(key, None)
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        now = time.time()
+        for item in raw.get("items") or []:
+            if not isinstance(item, dict) or not item.get("token"):
+                continue
+            try:
+                lot = ClaimLot(
+                    token=str(item["token"]),
+                    title=str(item.get("title") or ""),
+                    slug=str(item.get("slug") or ""),
+                    number=item.get("number"),
+                    price_ton=item.get("price_ton"),
+                    source=str(item.get("source") or ""),
+                    seller_id=int(item.get("seller_id") or 0),
+                    seller_name=str(item.get("seller_name") or ""),
+                    seller_username=item.get("seller_username"),
+                    nft_link=str(item.get("nft_link") or ""),
+                    getgems_link=str(item.get("getgems_link") or ""),
+                    rating=item.get("rating"),
+                    created=float(item.get("created") or now),
+                )
+            except (TypeError, ValueError):
+                continue
+            if now - lot.created <= TTL_SEC:
+                self._items[lot.token] = lot
+        claimed = raw.get("claimed") or {}
+        if isinstance(claimed, dict):
+            for token, stamped in claimed.items():
+                try:
+                    when = float(stamped)
+                except (TypeError, ValueError):
+                    continue
+                if token and now - when <= TTL_SEC:
+                    self._claimed[str(token)] = when
+
+    def _save(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "items": [asdict(lot) for lot in self._items.values()],
+                "claimed": self._claimed,
+            }
+            tmp = self.path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError as exc:
+            LOGGER.warning("не записал %s: %s", self.path, exc)
 
 
 def new_token() -> str:
@@ -115,29 +188,35 @@ def _claimer_label(user) -> str:
 
 
 def claimed_notice(claimed_by, lot: Optional[ClaimLot] = None) -> str:
+    """Только unicode: tg-emoji в edit_caption ломает подпись («Лототзанято»)."""
     who = _esc(_claimer_label(claimed_by)) if claimed_by is not None else "уже занят"
-    lines = [f"{e('check')} <b>Лот занят</b>", f"{e('user')} {who}"]
+    lines = ["✅ <b>Лот занят</b>", f"👤 {who}"]
     if lot is not None:
         num = f" #{lot.number}" if lot.number is not None and f"#{lot.number}" not in lot.title else ""
         title = f"{_esc(lot.title)}{num}".strip()
         if title:
-            lines.insert(1, f"{e('gift')} {title}")
+            lines.insert(1, f"🎁 {title}")
     return "\n".join(lines)
 
 
+async def _strip_keyboard(message: Message) -> None:
+    try:
+        await message.edit_reply_markup(reply_markup=None)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        pass
+
+
 async def _replace_card(message: Message, text: str) -> None:
+    """Меняем подпись на месте. Новые сообщения в ленту не шлём."""
     try:
         if message.photo or message.animation or message.document:
             await message.edit_caption(caption=text, reply_markup=None, parse_mode="HTML")
             return
-        await message.edit_text(text, reply_markup=None, disable_web_page_preview=True)
+        await message.edit_text(text, reply_markup=None, disable_web_page_preview=True, parse_mode="HTML")
         return
     except TelegramBadRequest as exc:
         LOGGER.warning("не обновил карточку (%s)", exc)
-    try:
-        await message.reply(text, disable_web_page_preview=True)
-    except (TelegramBadRequest, TelegramForbiddenError) as exc:
-        LOGGER.warning("не написал что лот занят: %s", exc)
+    await _strip_keyboard(message)
 
 
 async def _mark_group_claimed(call: CallbackQuery, lot: ClaimLot, claimed_by) -> None:
@@ -152,13 +231,14 @@ async def _mark_already_taken(call: CallbackQuery) -> None:
     message = call.message
     if not isinstance(message, Message):
         return
-    try:
-        await _replace_card(message, f"{e('check')} <b>Лот занят</b>")
-    except Exception:
-        try:
-            await message.edit_reply_markup(reply_markup=None)
-        except (TelegramBadRequest, TelegramForbiddenError):
-            pass
+    await _replace_card(message, "✅ <b>Лот занят</b>")
+
+
+async def _mark_stale_button(call: CallbackQuery) -> None:
+    message = call.message
+    if not isinstance(message, Message):
+        return
+    await _strip_keyboard(message)
 
 
 def setup_claims(store: ClaimStore) -> Router:
@@ -169,8 +249,12 @@ def setup_claims(store: ClaimStore) -> Router:
         token = (call.data or "").split(":", 1)[-1]
         lot = store.take(token)
         if lot is None:
-            await call.answer("Лот уже занят или устарел", show_alert=True)
-            await _mark_already_taken(call)
+            if store.was_claimed(token):
+                await call.answer("Лот уже занят", show_alert=True)
+                await _mark_already_taken(call)
+            else:
+                await call.answer("Кнопка устарела", show_alert=True)
+                await _mark_stale_button(call)
             return
         user = call.from_user
         if user is None:

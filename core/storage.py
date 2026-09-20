@@ -25,16 +25,47 @@ LOGGER = logging.getLogger("tg_gifts.storage")
 
 
 class MemoryTTLCache:
-    """Запасной кэш, если Redis не поднят на машине разработчика."""
+    """Запасной кэш, если Redis не поднят. Пишем на диск — дедуп живёт после рестарта."""
 
-    def __init__(self) -> None:
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or Path("data/alert_cache.json")
         self._data: dict[str, tuple[float, str]] = {}
+        self._load()
 
     def _purge(self) -> None:
-        now = time.monotonic()
+        now = time.time()
         dead = [key for key, (expires, _) in self._data.items() if expires <= now]
         for key in dead:
             self._data.pop(key, None)
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        now = time.time()
+        items = raw.get("keys") if isinstance(raw, dict) else None
+        if not isinstance(items, dict):
+            return
+        for key, item in items.items():
+            if not isinstance(item, list) or len(item) != 2:
+                continue
+            expires, value = float(item[0]), str(item[1])
+            if expires > now and key:
+                self._data[str(key)] = (expires, value)
+
+    def _save(self) -> None:
+        self._purge()
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"keys": {key: [expires, value] for key, (expires, value) in self._data.items()}}
+            tmp = self.path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError as exc:
+            LOGGER.warning("не записал %s: %s", self.path, exc)
 
     async def get(self, key: str) -> Optional[str]:
         self._purge()
@@ -42,13 +73,14 @@ class MemoryTTLCache:
         if item is None:
             return None
         expires, value = item
-        if expires <= time.monotonic():
+        if expires <= time.time():
             self._data.pop(key, None)
             return None
         return value
 
     async def set(self, key: str, value: str, ttl: int) -> None:
-        self._data[key] = (time.monotonic() + ttl, value)
+        self._data[key] = (time.time() + max(int(ttl), 1), value)
+        self._save()
 
     async def exists(self, key: str) -> bool:
         return await self.get(key) is not None

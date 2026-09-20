@@ -226,9 +226,9 @@ class TelegramFloodControl:
         return self.stop_event is not None and self.stop_event.is_set()
 
     def _note_flood(self, wait: int) -> None:
-        pause = min(max(int(wait or 0), 0), 20)
-        if pause >= 20:
-            self.cool_until = max(self.cool_until, time.monotonic() + min(pause, 12))
+        pause = min(max(int(wait or 0), 0), 12)
+        if pause >= 3:
+            self.cool_until = max(self.cool_until, time.monotonic() + pause)
 
     async def _sleep(self, seconds: float) -> None:
         if seconds <= 0:
@@ -339,12 +339,9 @@ class TelegramFloodControl:
             except FloodWaitError as exc:
                 wait = int(getattr(exc, "seconds", 1) or 1)
                 self._note_flood(wait)
-                if wait <= 3 and attempt + 1 < retries:
-                    LOGGER.warning("Telegram FloodWait %s: пауза %ss", label, wait)
-                    await self._sleep(wait)
-                    last_error = exc
-                    continue
-                LOGGER.warning("Telegram FloodWait %s %ss — пропускаю", label, wait)
+                pause = min(wait, 8)
+                LOGGER.warning("Telegram FloodWait %s: жду %ss, этот запрос пропускаю", label, pause)
+                await self._sleep(pause)
                 raise
             except RPCError as exc:
                 name = type(exc).__name__.upper()
