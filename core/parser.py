@@ -339,9 +339,7 @@ class TelegramFloodControl:
             except FloodWaitError as exc:
                 wait = int(getattr(exc, "seconds", 1) or 1)
                 self._note_flood(wait)
-                pause = min(wait, 8)
-                LOGGER.warning("Telegram FloodWait %s: жду %ss, этот запрос пропускаю", label, pause)
-                await self._sleep(pause)
+                LOGGER.warning("Telegram FloodWait %s %ss — пропускаю", label, wait)
                 raise
             except RPCError as exc:
                 name = type(exc).__name__.upper()

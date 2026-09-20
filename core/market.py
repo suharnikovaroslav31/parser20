@@ -1,9 +1,6 @@
 """
-Источники: получатели гифтов, свежие лоты и дешёвые лоты ниже оценки.
-Текущий флор маркета не считаем «знанием NFT» — это просто минимальный ask.
-
-MRKT / Tonnel / Portals / Getgems не обходятся — там уже ждут скам-ЛС.
-Продавцы TG берутся из result.users.
+Источники лохов: свежие NEW-лоты Telegram не у текущего флора.
+Флор = дешёвая страница маркета, это перекупы. MRKT/Tonnel не трогаем.
 """
 
 from __future__ import annotations
@@ -40,7 +37,8 @@ from core.ton_client import NANOTON, TonMarketClient, to_ton
 
 LOGGER = logging.getLogger("tg_gifts.market")
 CHEAP_PAGES = 0
-NEW_PAGES = 2
+NEW_PAGES = 1
+FLOOR_SAMPLE = 15
 MAX_NOOB_COLLECTIONS = 400
 COLLECTIONS_PER_PASS = 80
 PEOPLE_PER_PASS = 40
@@ -187,6 +185,7 @@ class GiftMarketScanner:
         self._skipped_known = 0
         self._tg_priced = 0
         self._skipped_smart = 0
+        self._skipped_floor = 0
         self._people_bootstrapped = False
         self._seller_cache: dict[int, tuple[AccountMetrics, list[UniqueGift], list]] = {}
         self._username_cache: dict[str, Optional[User]] = {}
@@ -236,6 +235,7 @@ class GiftMarketScanner:
         self._skipped_known = 0
         self._tg_priced = 0
         self._skipped_smart = 0
+        self._skipped_floor = 0
         self._seller_cache = {}
         self._username_cache = {}
         if len(self._value_cache) > 4000:
@@ -254,16 +254,17 @@ class GiftMarketScanner:
             if not await self.scanner._flood.ensure_connected():
                 LOGGER.error("Telegram нет связи — этот проход пропускаю")
                 return
-            LOGGER.info("источник лохов: свежие NEW-лоты Telegram, не старые диалоги сессии")
+            LOGGER.info("лохи = NEW Telegram не у флора, перекупов у флора не трогаю")
             async for snapshot in self._iter_source("telegram-resale", self._iter_telegram_resale()):
                 telegram_count += 1
                 yield snapshot
             LOGGER.info(
-                "Telegram NEW: лотов %s, снимков %s, повтор %s, шарят %s",
+                "Telegram NEW: лотов %s, лохов %s, у флора %s, не лохи %s, повтор %s",
                 self._tg_priced,
                 telegram_count,
-                self._skipped_known,
+                self._skipped_floor,
                 self._skipped_smart,
+                self._skipped_known,
             )
             people_count = 0
             async for snapshot in self._iter_source("people", self._iter_people()):
@@ -319,7 +320,7 @@ class GiftMarketScanner:
         resale_types.sort(
             key=lambda item: (
                 int(getattr(item, "stars", 10**9) or 10**9),
-                int(getattr(item, "availability_issued", 10**9) or 10**9),
+                -int(getattr(item, "availability_resale", 0) or 0),
             )
         )
         resale_types = resale_types[:MAX_NOOB_COLLECTIONS]
@@ -341,11 +342,6 @@ class GiftMarketScanner:
         for index, base in enumerate(batch, start=1):
             if self._stopping():
                 return
-            if self.scanner._flood.cooling:
-                left = max(0.0, self.scanner._flood.cool_until - time.monotonic())
-                if left > 0:
-                    LOGGER.info("Telegram flood %.1fs — жду, потом продолжаю обход", left)
-                    await asyncio.sleep(min(left, 8.0))
             gift_id = int(getattr(base, "id", 0) or 0)
             title = str(getattr(base, "title", "") or gift_id)
             if not gift_id:
@@ -359,8 +355,6 @@ class GiftMarketScanner:
                 raise
             except Exception as exc:
                 LOGGER.warning("resale %s (%s): %s", title, gift_id, exc)
-            if index > 1:
-                await asyncio.sleep(0.6)
             if index % 8 == 0:
                 async for snapshot in self._drain_ready_people(limit=10):
                     yield snapshot
@@ -383,8 +377,42 @@ class GiftMarketScanner:
         title: str,
         ton_usd: float,
     ) -> AsyncIterator[ProfileSnapshot]:
+        await self._learn_floor(gift_id, title, ton_usd)
         async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=False, max_pages=NEW_PAGES):
             yield snapshot
+
+    async def _learn_floor(self, gift_id: int, title: str, ton_usd: float) -> Optional[float]:
+        """Флор = самый дешёвый ask. Это витрина перекупов, в ленту не берём."""
+        known = self._collection_floor.get(int(gift_id))
+        if known is not None:
+            return known
+        try:
+            result = await self.scanner._flood.call(
+                lambda: self.scanner.client(
+                    GetResaleStarGiftsRequest(
+                        gift_id=gift_id,
+                        offset="",
+                        limit=FLOOR_SAMPLE,
+                        sort_by_price=True,
+                    )
+                ),
+                retries=1,
+                label=f"resale:{gift_id}:floor",
+            )
+        except (RPCError, asyncio.TimeoutError) as exc:
+            LOGGER.info("флор %s: %s", title, exc)
+            return None
+        prices: list[float] = []
+        for raw in getattr(result, "gifts", None) or []:
+            price = listing_price_ton(raw, ton_usd=ton_usd, stars_usd=self.settings.stars_usd)
+            if price is not None and price > 0:
+                prices.append(price)
+        if not prices:
+            return None
+        floor = min(prices)
+        self._collection_floor[int(gift_id)] = floor
+        LOGGER.info("флор %s = %.2f TON — NEW только мимо него", title, floor)
+        return floor
 
     async def _resale_pages(
         self,
@@ -510,14 +538,16 @@ class GiftMarketScanner:
             return None
         known_floor = self._collection_floor.get(int(collection_id)) if collection_id else None
         if listing_at_market_floor(price, known_floor):
-            self._skipped_smart += 1
+            self._skipped_floor += 1
             return None
         await self._apply_floor(unique, collection_id)
         if listing_at_market_floor(price, unique.telegram_floor_ton):
-            self._skipped_smart += 1
+            self._skipped_floor += 1
             return None
         if listing_hugs_floor(price, unique.fair_value_ton):
-            self._skipped_smart += 1
+            self._skipped_floor += 1
+            return None
+        if self.scanner._flood.cooling:
             return None
         cached = self._seller_cache.get(int(owner_id)) if owner_id else None
         if cached is not None:

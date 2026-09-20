@@ -491,11 +491,12 @@ class NanotonTests(unittest.TestCase):
 
 class SearchDirectionTests(unittest.TestCase):
     def test_telegram_scans_new_not_floor(self) -> None:
-        from core.market import CHEAP_PAGES, COLLECTIONS_PER_PASS, MAX_NOOB_COLLECTIONS, NEW_PAGES
+        from core.market import CHEAP_PAGES, COLLECTIONS_PER_PASS, FLOOR_SAMPLE, MAX_NOOB_COLLECTIONS, NEW_PAGES
 
         self.assertEqual(CHEAP_PAGES, 0)
-        self.assertGreaterEqual(NEW_PAGES, 2)
-        self.assertLessEqual(NEW_PAGES, 3)
+        self.assertGreaterEqual(NEW_PAGES, 1)
+        self.assertLessEqual(NEW_PAGES, 2)
+        self.assertGreaterEqual(FLOOR_SAMPLE, 10)
         self.assertLess(COLLECTIONS_PER_PASS, MAX_NOOB_COLLECTIONS)
         self.assertGreaterEqual(COLLECTIONS_PER_PASS, 40)
 
