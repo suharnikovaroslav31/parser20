@@ -369,8 +369,8 @@ class ProfileFilter:
         if snapshot.source in _MARKET_SOURCES:
             if looks_like_shell_profile(metrics):
                 found.append("пустой акк на маркете — альт перекупа")
-            if not has_cyrillic_name(metrics):
-                found.append("на маркете без кириллицы — не мамонт")
+            if name_has_foreign_script(metrics.first_name, metrics.last_name):
+                found.append("на маркете чужой скрипт — не мамонт")
             if looks_like_burner_name(metrics.first_name, metrics.last_name):
                 found.append("рандомное имя на маркете — альт перекупа")
             visible_nfts = [gift for gift in snapshot.unique_gifts if not gift.unsaved]

@@ -338,7 +338,7 @@ class FilterTests(unittest.TestCase):
         self.assertFalse(decision.matched)
         self.assertTrue(any("рынка" in reason for reason in decision.reasons))
 
-    def test_skip_market_latin_name(self) -> None:
+    def test_market_latin_name_can_match(self) -> None:
         snap = _snapshot(
             gifts=[_gift()],
             metrics=_metrics(lang_code="ru", first_name="Dima", last_name=""),
@@ -346,8 +346,7 @@ class FilterTests(unittest.TestCase):
         )
         snap.source = "tg_market"
         decision = self.flt.evaluate(snap)
-        self.assertFalse(decision.matched)
-        self.assertTrue(any("кириллиц" in reason for reason in decision.reasons))
+        self.assertTrue(decision.matched, decision.reasons)
 
     def test_skip_listing_near_last_sale(self) -> None:
         snap = _snapshot(
