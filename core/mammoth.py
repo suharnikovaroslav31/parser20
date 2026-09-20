@@ -1,8 +1,9 @@
 """
-Новый охотник: только мамонты / лохи / новички.
+Новый охотник: новички для перекупа дешёвых лотов.
 
-Источник — свежие NEW-лоты Telegram Gift Marketplace (мимо точного флора).
-Лох = Stars ур.1, мало NFT, не перекуп/флиппер. Одного человека — один раз.
+Источник — самые дешёвые лоты Telegram Gift Marketplace.
+Новичок = Stars ур.1, ровно 1 NFT, бедный профиль, цена у флора / чуть выше.
+Перекупов и флипперов режем. Одного человека — один раз.
 """
 
 from __future__ import annotations
@@ -35,15 +36,15 @@ FLOOR_MIN = 0.0
 FLOOR_MAX = 10.0
 RATING_LEVEL = 1
 MIN_NFT = 1
-MAX_NFT = 3
-# Только у самого флора = знает рынок. Остальные off-floor в 0–10 смотрим.
-FLOOR_BAND = 0.08
-MAX_RICHNESS = 55
-MAX_STARGIFTS = 15
+MAX_NFT = 1  # только один NFT — без коллекции
+# Дешёвый лот: не дороже флора +15%. Дороже = не для перекупа.
+CHEAP_MARKUP = 1.15
+MAX_RICHNESS = 40
+MAX_STARGIFTS = 4
 COLLECTIONS_PER_PASS = 48
-NEW_PAGES = 3
-FLOOR_SAMPLE = 15
-FULL_PER_COLLECTION = 40
+CHEAP_PAGES = 3
+FLOOR_SAMPLE = 20
+FULL_PER_COLLECTION = 50
 NANOTON = 1_000_000_000
 SEEN_PATH = Path("data/seen_mammoths.json")
 SEEN_TTL = 7 * 24 * 3600
@@ -126,15 +127,23 @@ def listing_price_ton(gift: Any, *, stars_usd: float = 0.013, ton_usd: float = 5
     return None
 
 
-def at_floor(ask: Optional[float], floor: Optional[float], *, band: float = FLOOR_BAND) -> bool:
-    """Цена у флора — знает рынок, не лох."""
+def at_floor(ask: Optional[float], floor: Optional[float], *, band: float = 0.08) -> bool:
     if ask is None or floor is None or floor <= 0 or ask <= 0:
         return False
     return abs(ask - floor) / floor <= band
 
 
+def is_cheap_lot(ask: Optional[float], floor: Optional[float]) -> bool:
+    """Дешёвый для перекупа: у флора или чуть выше, не наценка."""
+    if ask is None or ask <= 0:
+        return False
+    if floor is None or floor <= 0:
+        return ask < FLOOR_MAX
+    return ask <= floor * CHEAP_MARKUP
+
+
 def profile_richness(metrics: AccountMetrics) -> int:
-    """Насколько профиль «живой». У лоха низкий/средний; у перекупа — высокий."""
+    """У новичка профиль бедный; у прошаренного — жирный."""
     score = 0
     if metrics.username:
         score += 20
@@ -265,14 +274,14 @@ def is_mammoth(
         fail.append(f"рейтинг ур.{level} ≠ {RATING_LEVEL}")
     if ask < FLOOR_MIN or ask >= FLOOR_MAX:
         fail.append(f"цена {ask:g} вне 0–10")
-    if floor is not None and at_floor(ask, floor):
-        fail.append(f"цена у флора {ask:g}≈{floor:g} — шарит")
+    if floor is not None and not is_cheap_lot(ask, floor):
+        fail.append(f"дорого для перекупа {ask:g} > флора×{CHEAP_MARKUP:g} ({floor:g})")
     if fail:
         return MammothVerdict(False, fail)
     return MammothVerdict(
         True,
         [
-            f"лох: ур.{level}, {n} NFT, {ask:g} TON"
+            f"новичок: ур.{level}, {n} NFT, дешёвый {ask:g} TON"
             + (f" (флор {floor:g})" if floor else "")
             + f", профиль {richness}/100, акк ~{metrics.account_age_days}д"
         ],
@@ -348,10 +357,10 @@ class MammothHunter:
             LOGGER.error("нет Telegram — проход skip")
             return
         LOGGER.info(
-            "охота на лохов: NEW Telegram, ур.%s, NFT %s–%s, мимо флора, профиль ≤%s",
+            "охота на новичков: дешёвые лоты, ур.%s, ровно %s NFT, ≤%.0f%% флора, профиль ≤%s",
             RATING_LEVEL,
-            MIN_NFT,
             MAX_NFT,
+            CHEAP_MARKUP * 100,
             MAX_RICHNESS,
         )
         matched = 0
@@ -440,7 +449,7 @@ class MammothHunter:
             return None
         floor = min(prices)
         self._floors[gift_id] = floor
-        LOGGER.info("флор %s = %.2f — беру мимо флора (±%.0f%%)", title, floor, FLOOR_BAND * 100)
+        LOGGER.info("флор %s = %.2f — беру дешёвые ≤%.0f%% флора", title, floor, CHEAP_MARKUP * 100)
         return floor
 
     async def _scan_collection(self, gift_id: int, title: str) -> AsyncIterator[FilterDecision]:
@@ -450,7 +459,7 @@ class MammothHunter:
             return
         left = FULL_PER_COLLECTION
         offset = ""
-        for _ in range(NEW_PAGES):
+        for _ in range(CHEAP_PAGES):
             if self._stopping() or left <= 0:
                 return
             result = await self.account.flood.call(
@@ -459,24 +468,26 @@ class MammothHunter:
                         gift_id=gift_id,
                         offset=off,
                         limit=min(50, self.settings.gift_page_size),
-                        sort_by_price=None,
+                        sort_by_price=True,
                     )
                 ),
-                label=f"new:{gift_id}",
+                label=f"cheap:{gift_id}",
             )
             users = {
                 u.id: u
                 for u in (getattr(result, "users", None) or [])
                 if isinstance(u, User)
             }
+            hit_expensive = False
             for raw in getattr(result, "gifts", None) or []:
                 if self._stopping() or left <= 0:
                     return
                 price = listing_price_ton(raw, stars_usd=self.settings.stars_usd)
-                if price is None or price < FLOOR_MIN or price >= FLOOR_MAX:
+                if price is None or price < FLOOR_MIN:
                     continue
-                if floor is not None and at_floor(price, floor):
-                    continue
+                if price >= FLOOR_MAX or (floor is not None and not is_cheap_lot(price, floor)):
+                    hit_expensive = True
+                    break
                 owner_id = lot_owner_id(raw)
                 if owner_id and self.seen.seen(owner_id):
                     continue
@@ -491,6 +502,8 @@ class MammothHunter:
                 decision = await self._open_seller(user, raw, price, gift_id, floor)
                 if decision is not None:
                     yield decision
+            if hit_expensive:
+                return
             next_offset = str(getattr(result, "next_offset", "") or "")
             if not next_offset or next_offset == offset:
                 return

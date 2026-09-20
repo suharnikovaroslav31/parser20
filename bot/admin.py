@@ -102,7 +102,7 @@ def _menu_text(live: LiveFilters) -> str:
         f"{e('spark')} Сборка <code>{BUILD}</code>. Настройки видны только вам.\n\n"
         f"{lines}\n\n"
         f"{e('chat')} Гарант: <a href=\"{_community(live)}\">GGsel_deal</a>\n"
-        f"{e('warn')} Лох = новичок: ур.1, ≤3 NFT, мимо флора. Перекуп / флиппер / скрытые NFT — skip.\n"
+        f"{e('warn')} Новичок = ур.1, ровно 1 NFT, дешёвый лот у флора. Флиппер / склад / скрытые — skip.\n"
         f"Нажмите кнопку, чтобы сменить значение."
     )
 
@@ -112,7 +112,7 @@ def _prompts() -> dict[str, str]:
         "floor_min_ton": "Мин. цена лота в TON (например 0 или 1.5)",
         "floor_max_ton": "Макс. цена лота в TON (например 10)",
         "min_unique_gifts": "Минимум unique NFT в профиле (целое)",
-        "max_unique_gifts": "Максимум unique NFT в профиле (целое, сейчас 3)",
+        "max_unique_gifts": "Максимум unique NFT в профиле (целое, сейчас 1)",
         "stars_rating_min": "Мин. уровень Stars-рейтинга (1 = новичок)",
         "stars_rating_max": "Макс. уровень Stars-рейтинга (1 = только первый уровень)",
         "max_account_age_days": "Макс. возраст аккаунта в днях (0 = выключить фильтр)",
