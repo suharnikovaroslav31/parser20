@@ -1,8 +1,7 @@
 """
-Новый охотник: только мамонты / лохи / новички.
+Новый охотник: отборные лохи / мамонты.
 
-Источник один — свежие NEW-лоты Telegram Gift Marketplace не у флора.
-Профиль: Stars ур.1, 1–2 видимых NFT, без скрытых, лот 0–10 TON.
+NEW-лоты мимо флора. Профиль: ур.1, ровно 1 NFT, бедный аккаунт, без скрытых.
 Одного человека шлём один раз.
 """
 
@@ -36,8 +35,10 @@ FLOOR_MIN = 0.0
 FLOOR_MAX = 10.0
 RATING_LEVEL = 1
 MIN_NFT = 1
-MAX_NFT = 2
+MAX_NFT = 1  # отборный лох — только один NFT
 FLOOR_BAND = 0.08
+MAX_RICHNESS = 45  # бедный профиль
+MAX_STARGIFTS = 8
 COLLECTIONS_PER_PASS = 40
 NEW_PAGES = 3
 FLOOR_SAMPLE = 15
@@ -130,6 +131,29 @@ def at_floor(ask: Optional[float], floor: Optional[float]) -> bool:
     return abs(ask - floor) / floor <= FLOOR_BAND
 
 
+def profile_richness(metrics: AccountMetrics) -> int:
+    score = 0
+    if metrics.username:
+        score += 20
+    if metrics.is_premium:
+        score += 20
+    if metrics.is_verified:
+        score += 15
+    if metrics.has_photo:
+        score += 10
+    if (metrics.bio or "").strip():
+        score += 10
+    if metrics.personal_channel_id:
+        score += 15
+    score += min(10, max(0, metrics.public_channel_count) * 5)
+    score += min(10, max(0, metrics.common_chats_count) * 2)
+    return max(0, min(100, score))
+
+
+def looks_like_shell(metrics: AccountMetrics) -> bool:
+    return (not metrics.username) and (not (metrics.bio or "").strip()) and (not metrics.has_photo)
+
+
 def looks_russian(first: str, last: str, bio: str, lang: Optional[str]) -> bool:
     base = (lang or "").strip().lower().replace("_", "-").split("-", 1)[0]
     if base in {"ru", "uk", "be", "kk"}:
@@ -203,12 +227,19 @@ def is_mammoth(metrics: AccountMetrics, unique: list[UniqueGift], ask: float) ->
         fail.append("чужой скрипт")
     if is_burner(metrics.first_name, metrics.last_name):
         fail.append("рандомное имя")
+    if looks_like_shell(metrics):
+        fail.append("пустой акк — альт")
     if metrics.personal_channel_id:
         fail.append("личный канал")
     if _TRADER_NICK.search(metrics.username or ""):
         fail.append("юзернейм перекупа")
     if _RESELLER_BIO.search(metrics.bio or ""):
         fail.append("био перекупа")
+    richness = profile_richness(metrics)
+    if richness > MAX_RICHNESS:
+        fail.append(f"профиль жирный {richness} > {MAX_RICHNESS}")
+    if metrics.stargifts_count is not None and metrics.stargifts_count > MAX_STARGIFTS:
+        fail.append(f"гифтов {metrics.stargifts_count} > {MAX_STARGIFTS}")
     hidden = [g for g in unique if g.unsaved]
     if hidden:
         fail.append(f"скрытые NFT: {len(hidden)}")
@@ -218,6 +249,9 @@ def is_mammoth(metrics: AccountMetrics, unique: list[UniqueGift], ask: float) ->
         fail.append(f"NFT {n} < {MIN_NFT}")
     if n > MAX_NFT:
         fail.append(f"NFT {n} > {MAX_NFT}")
+    on_sale = [g for g in visible if g.on_resale]
+    if len(on_sale) >= 2:
+        fail.append("несколько на ресейле — флиппер")
     level = metrics.stars_rating_level
     if level is None:
         fail.append("рейтинг скрыт")
@@ -229,8 +263,9 @@ def is_mammoth(metrics: AccountMetrics, unique: list[UniqueGift], ask: float) ->
         return MammothVerdict(False, fail)
     return MammothVerdict(
         True,
-        [f"мамонт: ур.{level}, {n} NFT, {ask:g} TON, акк ~{metrics.account_age_days}д"],
+        [f"отборный лох: ур.{level}, {n} NFT, {ask:g} TON, профиль {richness}/100, акк ~{metrics.account_age_days}д"],
     )
+
 
 
 class SeenPeople:
@@ -302,12 +337,10 @@ class MammothHunter:
             LOGGER.error("нет Telegram — проход skip")
             return
         LOGGER.info(
-            "охота на мамонтов: NEW Telegram, ур.%s, NFT %s–%s, лот %.0f–%.0f TON",
+            "охота на отборных лохов: NEW, ур.%s, ровно %s NFT, мимо флора, профиль ≤%s",
             RATING_LEVEL,
-            MIN_NFT,
             MAX_NFT,
-            FLOOR_MIN,
-            FLOOR_MAX,
+            MAX_RICHNESS,
         )
         matched = 0
         try:
@@ -604,7 +637,14 @@ class MammothHunter:
             if metrics.stars_rating_level != RATING_LEVEL:
                 self._seller_cache[uid] = (metrics, [])
                 return None
-            if metrics.stargifts_count is not None and metrics.stargifts_count > 20:
+            if metrics.stargifts_count is not None and metrics.stargifts_count > MAX_STARGIFTS:
+                self._seller_cache[uid] = (metrics, [])
+                return None
+            if profile_richness(metrics) > MAX_RICHNESS:
+                self._seller_cache[uid] = (metrics, [])
+                return None
+            if metrics.personal_channel_id:
+                self._seller_cache[uid] = (metrics, [])
                 return None
             profile, ok = await self._fetch_gifts(user)
             metrics.gifts_fetched = ok

@@ -15,15 +15,15 @@ from config import Settings
 
 LOGGER = logging.getLogger("tg_gifts.runtime")
 DEFAULT_PATH = Path("data/filters.json")
-SCHEMA_VERSION = 15
-BUILD = "20260920-26"
+SCHEMA_VERSION = 16
+BUILD = "20260920-27"
 
-# Мамонт = русский, ур.1, 1–2 NFT, мимо флора, 0–10 TON.
+# Отборный лох: ур.1, ровно 1 NFT, бедный профиль, мимо флора.
 ORIGINAL_FILTERS: dict[str, Any] = {
     "floor_min_ton": 0.0,
     "floor_max_ton": 10.0,
     "min_unique_gifts": 1,
-    "max_unique_gifts": 2,
+    "max_unique_gifts": 1,
     "stars_rating_min": 1,
     "stars_rating_max": 1,
     "require_stars_rating": True,
@@ -46,7 +46,7 @@ class LiveFilters:
     floor_min_ton: float = 0.0
     floor_max_ton: float = 10.0
     min_unique_gifts: int = 1
-    max_unique_gifts: int = 2
+    max_unique_gifts: int = 1
     stars_rating_min: int = 1
     stars_rating_max: int = 1
     require_stars_rating: bool = True
@@ -71,7 +71,7 @@ class LiveFilters:
             floor_min_ton=0.0,
             floor_max_ton=float(settings.floor_threshold_ton),
             min_unique_gifts=int(settings.min_unique_gifts),
-            max_unique_gifts=min(2, int(settings.max_unique_gifts)),
+            max_unique_gifts=min(1, int(settings.max_unique_gifts)),
             stars_rating_min=1,
             stars_rating_max=1,
             require_stars_rating=True,

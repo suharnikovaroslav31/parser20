@@ -1,4 +1,4 @@
-"""Тесты нового охотника мамонтов."""
+"""Тесты охотника отборных лохов."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from core.mammoth import (
     FLOOR_MAX,
+    MAX_RICHNESS,
     RATING_LEVEL,
     SeenPeople,
     at_floor,
@@ -16,6 +17,7 @@ from core.mammoth import (
     is_mammoth,
     listing_price_ton,
     looks_russian,
+    profile_richness,
 )
 from core.models import AccountMetrics, UniqueGift
 from core.runtime import BUILD
@@ -24,7 +26,7 @@ from core.runtime import BUILD
 def _metrics(**kwargs) -> AccountMetrics:
     base = dict(
         user_id=8_800_000_000,
-        username="ivan",
+        username=None,
         first_name="Иван",
         last_name="",
         is_premium=False,
@@ -48,12 +50,12 @@ def _metrics(**kwargs) -> AccountMetrics:
     return AccountMetrics(**base)
 
 
-def _gift(slug: str = "LolPop-1", *, unsaved: bool = False, price: float = 6.0) -> UniqueGift:
+def _gift(slug: str = "LolPop-1", *, unsaved: bool = False, price: float = 6.0, on_resale: bool = True) -> UniqueGift:
     return UniqueGift(
         slug=slug,
         title="Lol Pop",
         number=1,
-        on_resale=True,
+        on_resale=on_resale,
         market_floor_ton=price,
         unsaved=unsaved,
     )
@@ -64,6 +66,16 @@ class MammothJudgeTests(unittest.TestCase):
         v = is_mammoth(_metrics(), [_gift()], 6.0)
         self.assertTrue(v.ok, v.reasons)
 
+    def test_two_nft_skips(self) -> None:
+        v = is_mammoth(_metrics(), [_gift("A-1"), _gift("B-2", on_resale=False)], 6.0)
+        self.assertFalse(v.ok)
+
+    def test_rich_profile_skips(self) -> None:
+        rich = _metrics(username="ivanov", is_premium=True, bio="hi", has_photo=True)
+        self.assertGreater(profile_richness(rich), MAX_RICHNESS)
+        v = is_mammoth(rich, [_gift()], 6.0)
+        self.assertFalse(v.ok)
+
     def test_hidden_nft_skips(self) -> None:
         v = is_mammoth(_metrics(), [_gift(), _gift("X-2", unsaved=True)], 6.0)
         self.assertFalse(v.ok)
@@ -71,10 +83,6 @@ class MammothJudgeTests(unittest.TestCase):
 
     def test_rating_not_one_skips(self) -> None:
         v = is_mammoth(_metrics(stars_rating_level=2), [_gift()], 6.0)
-        self.assertFalse(v.ok)
-
-    def test_too_many_nft_skips(self) -> None:
-        v = is_mammoth(_metrics(), [_gift("A-1"), _gift("B-2"), _gift("C-3")], 6.0)
         self.assertFalse(v.ok)
 
     def test_price_over_cap_skips(self) -> None:
@@ -92,6 +100,10 @@ class MammothJudgeTests(unittest.TestCase):
     def test_latin_ru_still_ok(self) -> None:
         v = is_mammoth(_metrics(first_name="Dima", lang_code="ru"), [_gift()], 6.0)
         self.assertTrue(v.ok, v.reasons)
+
+    def test_shell_skips(self) -> None:
+        v = is_mammoth(_metrics(has_photo=False, username=None, bio=""), [_gift()], 6.0)
+        self.assertFalse(v.ok)
 
 
 class HelperTests(unittest.TestCase):
@@ -114,7 +126,7 @@ class HelperTests(unittest.TestCase):
         self.assertAlmostEqual(listing_price_ton(gift), 2.5)
 
     def test_build(self) -> None:
-        self.assertEqual(BUILD, "20260920-26")
+        self.assertEqual(BUILD, "20260920-27")
         self.assertEqual(RATING_LEVEL, 1)
 
 
