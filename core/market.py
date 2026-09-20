@@ -28,7 +28,7 @@ from core.filters import (
     listing_at_market_floor,
     listing_hugs_floor,
     looks_like_burner_name,
-    name_has_cyrillic,
+    name_has_foreign_script,
 )
 from core.listings import ListingTracker
 from core.models import AccountMetrics, ProfileSnapshot, UniqueGift, utcnow
@@ -41,6 +41,7 @@ NEW_PAGES = 1
 FLOOR_SAMPLE = 15
 MAX_NOOB_COLLECTIONS = 400
 COLLECTIONS_PER_PASS = 16
+FULL_PER_COLLECTION = 5
 PEOPLE_PER_PASS = 40
 EXTERNAL_LIMIT = 25
 LIVE_PEOPLE_SOURCES = frozenset({"live_gift_received", "live_gift_action", "recent_gift_peer"})
@@ -186,6 +187,7 @@ class GiftMarketScanner:
         self._tg_priced = 0
         self._skipped_smart = 0
         self._skipped_floor = 0
+        self._full_left = 0
         self._people_bootstrapped = False
         self._seller_cache: dict[int, tuple[AccountMetrics, list[UniqueGift], list]] = {}
         self._username_cache: dict[str, Optional[User]] = {}
@@ -235,7 +237,7 @@ class GiftMarketScanner:
             return False
         if looks_like_burner_name(first, last):
             return True
-        return not name_has_cyrillic(first, last)
+        return name_has_foreign_script(first, last)
 
     def _lot_key(self, source: str, slug: str, extra: str = "") -> str:
         token = (slug or extra or "").strip()
@@ -401,6 +403,7 @@ class GiftMarketScanner:
         ton_usd: float,
     ) -> AsyncIterator[ProfileSnapshot]:
         await self._learn_floor(gift_id, title, ton_usd)
+        self._full_left = FULL_PER_COLLECTION
         async for snapshot in self._resale_pages(gift_id, title, ton_usd, sort_by_price=False, max_pages=NEW_PAGES):
             yield snapshot
 
@@ -574,6 +577,9 @@ class GiftMarketScanner:
         if cached is not None:
             metrics, profile_uniques, regular = cached
         else:
+            if self._full_left <= 0:
+                return None
+            self._full_left -= 1
             metrics = await self._metrics_for_seller(user, owner_id, unique.seller_name)
             level = metrics.stars_rating_level
             if self.live.require_stars_rating and (

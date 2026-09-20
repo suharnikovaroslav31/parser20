@@ -187,7 +187,8 @@ def listing_at_market_floor(ask: Optional[float], market_floor: Optional[float],
     return abs(ask - market_floor) / market_floor <= band
 
 
-def name_has_cyrillic(first_name: str = "", last_name: str = "", bio: str = "") -> bool:
+def name_has_foreign_script(first_name: str = "", last_name: str = "") -> bool:
+    return bool(_FOREIGN_SCRIPT.search(f"{first_name or ''} {last_name or ''}"))
     return bool(_CYRILLIC.search(f"{first_name or ''} {last_name or ''} {bio or ''}"))
 
 

@@ -533,9 +533,11 @@ class SearchDirectionTests(unittest.TestCase):
         blank = SimpleNamespace(first_name="", last_name="")
         latin = SimpleNamespace(first_name="John", last_name="Smith")
         rus = SimpleNamespace(first_name="Иван", last_name="")
+        cn = SimpleNamespace(first_name="伟", last_name="")
         self.assertFalse(GiftMarketScanner._market_seller_is_flipper(blank, source="tg_market"))
-        self.assertTrue(GiftMarketScanner._market_seller_is_flipper(latin, source="tg_market"))
+        self.assertFalse(GiftMarketScanner._market_seller_is_flipper(latin, source="tg_market"))
         self.assertFalse(GiftMarketScanner._market_seller_is_flipper(rus, source="tg_market"))
+        self.assertTrue(GiftMarketScanner._market_seller_is_flipper(cn, source="tg_market"))
 
     def test_gift_action_prefers_recipient_peer(self) -> None:
         from core.parser import ProfileScanner
