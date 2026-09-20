@@ -41,7 +41,8 @@ NEW_PAGES = 1
 FLOOR_SAMPLE = 15
 MAX_NOOB_COLLECTIONS = 400
 COLLECTIONS_PER_PASS = 16
-FULL_PER_COLLECTION = 5
+FULL_PER_COLLECTION = 12
+WAREHOUSE_SAVED_GIFTS = 24
 PEOPLE_PER_PASS = 40
 EXTERNAL_LIMIT = 25
 LIVE_PEOPLE_SOURCES = frozenset({"live_gift_received", "live_gift_action", "recent_gift_peer"})
@@ -57,6 +58,17 @@ def _peer_user_id(peer: Any) -> Optional[int]:
     if isinstance(peer, PeerUser):
         return int(peer.user_id)
     return getattr(peer, "user_id", None)
+
+
+def _lot_owner_id(raw: Any) -> Optional[int]:
+    gift = getattr(raw, "gift", None)
+    for obj in (raw, gift):
+        if obj is None:
+            continue
+        uid = _peer_user_id(getattr(obj, "owner_id", None))
+        if uid:
+            return uid
+    return None
 
 
 def marketplace_slug(item: dict[str, Any]) -> str:
@@ -187,8 +199,12 @@ class GiftMarketScanner:
         self._tg_priced = 0
         self._skipped_smart = 0
         self._skipped_floor = 0
+        self._skipped_flood = 0
+        self._skipped_cap = 0
+        self._skipped_nouser = 0
         self._full_left = 0
         self._people_bootstrapped = False
+        self._people_misses = 0
         self._seller_cache: dict[int, tuple[AccountMetrics, list[UniqueGift], list]] = {}
         self._username_cache: dict[str, Optional[User]] = {}
         self._catalog_offset = 0
@@ -239,6 +255,25 @@ class GiftMarketScanner:
             return True
         return name_has_foreign_script(first, last)
 
+    @staticmethod
+    def _stargifts_count_blocks(count: Optional[int], live) -> bool:
+        """stargifts_count — все гифты, не NFT. Режем только пустых и склады."""
+        if count is None:
+            return False
+        if count < int(live.min_unique_gifts or 0):
+            return True
+        return count >= WAREHOUSE_SAVED_GIFTS
+
+    async def _wait_short_flood(self) -> bool:
+        left = self.scanner._flood.cool_until - time.monotonic()
+        if left <= 0:
+            return True
+        if left > 8:
+            return False
+        LOGGER.info("Telegram flood %.1fs — жду, лоты не бросаю", left)
+        await asyncio.sleep(left)
+        return True
+
     def _lot_key(self, source: str, slug: str, extra: str = "") -> str:
         token = (slug or extra or "").strip()
         return f"{source}:{token}" if token else ""
@@ -256,6 +291,9 @@ class GiftMarketScanner:
         self._tg_priced = 0
         self._skipped_smart = 0
         self._skipped_floor = 0
+        self._skipped_flood = 0
+        self._skipped_cap = 0
+        self._skipped_nouser = 0
         self._seller_cache = {}
         self._username_cache = {}
         if len(self._value_cache) > 4000:
@@ -279,12 +317,15 @@ class GiftMarketScanner:
                 telegram_count += 1
                 yield snapshot
             LOGGER.info(
-                "Telegram NEW: лотов %s, лохов %s, у флора %s, не лохи %s, повтор %s",
+                "Telegram NEW: лотов %s, лохов %s, у флора %s, не лохи %s, повтор %s, flood %s, лимит full %s, без продавца %s",
                 self._tg_priced,
                 telegram_count,
                 self._skipped_floor,
                 self._skipped_smart,
                 self._skipped_known,
+                self._skipped_flood,
+                self._skipped_cap,
+                self._skipped_nouser,
             )
             people_count = 0
             async for snapshot in self._iter_source("people", self._iter_people()):
@@ -311,11 +352,20 @@ class GiftMarketScanner:
         if not self._people_bootstrapped:
             await self.scanner.bootstrap_queue()
             self._people_bootstrapped = True
+        elif self._people_misses >= 1:
+            LOGGER.info("people: пусто, этот круг пропускаю — сначала NEW Telegram")
+            return
         else:
             await self.scanner.refresh_people_queue()
+        yielded = 0
         async for snapshot in self.scanner.drain_queue(limit=PEOPLE_PER_PASS):
             if self._is_fresh_noob(snapshot):
+                yielded += 1
                 yield snapshot
+        if yielded == 0:
+            self._people_misses += 1
+        else:
+            self._people_misses = 0
 
     @staticmethod
     def _is_fresh_noob(snapshot: ProfileSnapshot) -> bool:
@@ -379,7 +429,10 @@ class GiftMarketScanner:
                     left = max(0.0, self.scanner._flood.cool_until - time.monotonic())
                     LOGGER.info("Telegram flood %.0fs — пауза, каталог не жгу", left)
                     await asyncio.sleep(min(max(left, 3.0), 8.0))
-                    return
+                    if not await self._wait_short_flood():
+                        LOGGER.info("Telegram flood длинный — остальные коллекции в этом круге пропущу")
+                        return
+                    continue
             if index % 8 == 0:
                 async for snapshot in self._drain_ready_people(limit=10):
                     yield snapshot
@@ -412,7 +465,7 @@ class GiftMarketScanner:
         known = self._collection_floor.get(int(gift_id))
         if known is not None:
             return known
-        if self.scanner._flood.cooling:
+        if not await self._wait_short_flood():
             return None
         try:
             result = await self.scanner._flood.call(
@@ -424,7 +477,7 @@ class GiftMarketScanner:
                         sort_by_price=True,
                     )
                 ),
-                retries=1,
+                retries=3,
                 label=f"resale:{gift_id}:floor",
             )
         except FloodWaitError:
@@ -466,7 +519,7 @@ class GiftMarketScanner:
                         sort_by_price=True if sort_by_price else None,
                     )
                 ),
-                retries=1,
+                retries=3,
                 label=f"resale:{gift_id}:{'price' if sort_by_price else 'new'}",
             )
             users = {
@@ -550,12 +603,12 @@ class GiftMarketScanner:
         unique.on_resale = True
         unique.market_floor_ton = price
         unique.market_source = "telegram_resale" if source == "tg_market" else source
-        owner_id = _peer_user_id(getattr(raw, "owner_id", None))
+        owner_id = _lot_owner_id(raw)
         unique.seller_id = owner_id
-        unique.seller_name = getattr(raw, "owner_name", None)
+        unique.seller_name = getattr(raw, "owner_name", None) or getattr(getattr(raw, "gift", None), "owner_name", None)
         user = self._seller_from_users(owner_id, users)
         if user is None:
-            self._skipped_smart += 1
+            self._skipped_nouser += 1
             return None
         if self._market_seller_is_flipper(user, source=source):
             self._skipped_smart += 1
@@ -571,16 +624,22 @@ class GiftMarketScanner:
         if listing_hugs_floor(price, unique.fair_value_ton):
             self._skipped_floor += 1
             return None
-        if self.scanner._flood.cooling:
+        if not await self._wait_short_flood():
+            self._skipped_flood += 1
             return None
         cached = self._seller_cache.get(int(owner_id)) if owner_id else None
         if cached is not None:
             metrics, profile_uniques, regular = cached
         else:
             if self._full_left <= 0:
+                self._skipped_cap += 1
                 return None
             self._full_left -= 1
             metrics = await self._metrics_for_seller(user, owner_id, unique.seller_name)
+            if not metrics.stars_fetched:
+                self._full_left += 1
+                self._skipped_flood += 1
+                return None
             level = metrics.stars_rating_level
             if self.live.require_stars_rating and (
                 level is None or level < self.live.stars_rating_min or level > self.live.stars_rating_max
@@ -588,12 +647,13 @@ class GiftMarketScanner:
                 self._skipped_smart += 1
                 return None
             gifts_count = metrics.stargifts_count
-            if gifts_count is not None and (
-                gifts_count < self.live.min_unique_gifts or gifts_count > self.live.max_unique_gifts
-            ):
+            if self._stargifts_count_blocks(gifts_count, self.live):
                 self._skipped_smart += 1
                 return None
-            profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
+            if gifts_count == 1:
+                profile_uniques, regular, gifts_ok = [], [], True
+            else:
+                profile_uniques, regular, gifts_ok = await self._load_profile_nfts(user, unique)
             metrics.gifts_fetched = gifts_ok
             if owner_id and metrics.stars_fetched:
                 self._seller_cache[int(owner_id)] = (metrics, profile_uniques, regular)

@@ -490,7 +490,7 @@ class NanotonTests(unittest.TestCase):
 
 class SearchDirectionTests(unittest.TestCase):
     def test_telegram_scans_new_not_floor(self) -> None:
-        from core.market import CHEAP_PAGES, COLLECTIONS_PER_PASS, FLOOR_SAMPLE, MAX_NOOB_COLLECTIONS, NEW_PAGES
+        from core.market import CHEAP_PAGES, COLLECTIONS_PER_PASS, FLOOR_SAMPLE, FULL_PER_COLLECTION, MAX_NOOB_COLLECTIONS, NEW_PAGES
 
         self.assertEqual(CHEAP_PAGES, 0)
         self.assertGreaterEqual(NEW_PAGES, 1)
@@ -498,6 +498,7 @@ class SearchDirectionTests(unittest.TestCase):
         self.assertGreaterEqual(FLOOR_SAMPLE, 10)
         self.assertLess(COLLECTIONS_PER_PASS, MAX_NOOB_COLLECTIONS)
         self.assertGreaterEqual(COLLECTIONS_PER_PASS, 12)
+        self.assertGreaterEqual(FULL_PER_COLLECTION, 10)
 
     def test_people_source_skips_old_dialogs(self) -> None:
         from core.market import LIVE_PEOPLE_SOURCES
@@ -537,6 +538,32 @@ class SearchDirectionTests(unittest.TestCase):
         self.assertFalse(GiftMarketScanner._market_seller_is_flipper(latin, source="tg_market"))
         self.assertFalse(GiftMarketScanner._market_seller_is_flipper(rus, source="tg_market"))
         self.assertTrue(GiftMarketScanner._market_seller_is_flipper(cn, source="tg_market"))
+
+    def test_stargifts_count_is_not_unique_nft_cap(self) -> None:
+        from core.market import GiftMarketScanner, WAREHOUSE_SAVED_GIFTS
+
+        live = SimpleNamespace(min_unique_gifts=1, max_unique_gifts=2)
+        self.assertFalse(GiftMarketScanner._stargifts_count_blocks(None, live))
+        self.assertFalse(GiftMarketScanner._stargifts_count_blocks(1, live))
+        self.assertFalse(GiftMarketScanner._stargifts_count_blocks(5, live))
+        self.assertTrue(GiftMarketScanner._stargifts_count_blocks(0, live))
+        self.assertTrue(GiftMarketScanner._stargifts_count_blocks(WAREHOUSE_SAVED_GIFTS, live))
+
+    def test_lot_owner_from_nested_gift(self) -> None:
+        from core.market import _lot_owner_id
+
+        nested = SimpleNamespace(owner_id=SimpleNamespace(user_id=42), owner_name="Ivan")
+        raw = SimpleNamespace(owner_id=None, gift=nested)
+        self.assertEqual(_lot_owner_id(raw), 42)
+        self.assertEqual(_lot_owner_id(SimpleNamespace(owner_id=SimpleNamespace(user_id=9))), 9)
+
+    def test_short_flood_is_retried(self) -> None:
+        from core.parser import TelegramFloodControl
+
+        self.assertTrue(TelegramFloodControl.should_wait_flood(4, 0, 3))
+        self.assertFalse(TelegramFloodControl.should_wait_flood(4, 2, 3))
+        self.assertFalse(TelegramFloodControl.should_wait_flood(4, 0, 1))
+        self.assertFalse(TelegramFloodControl.should_wait_flood(30, 0, 3))
 
     def test_gift_action_prefers_recipient_peer(self) -> None:
         from core.parser import ProfileScanner

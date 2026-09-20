@@ -225,6 +225,11 @@ class TelegramFloodControl:
     def _stopping(self) -> bool:
         return self.stop_event is not None and self.stop_event.is_set()
 
+    @staticmethod
+    def should_wait_flood(wait: int, attempt: int, retries: int) -> bool:
+        """Короткий FloodWait ждут и повторяют — иначе весь круг лотов сгорает."""
+        return 0 < int(wait or 0) <= 8 and attempt + 1 < max(int(retries or 0), 1)
+
     def _note_flood(self, wait: int) -> None:
         pause = min(max(int(wait or 0), 0), 12)
         if pause >= 3:
@@ -338,8 +343,13 @@ class TelegramFloodControl:
                 continue
             except FloodWaitError as exc:
                 wait = int(getattr(exc, "seconds", 1) or 1)
+                if self.should_wait_flood(wait, attempt, retries):
+                    LOGGER.warning("Telegram FloodWait %s %ss — жду и повторяю", label, wait)
+                    await self._sleep(wait + 0.35)
+                    last_error = exc
+                    continue
                 self._note_flood(wait)
-                LOGGER.warning("Telegram FloodWait %s %ss — пропускаю", label, wait)
+                LOGGER.warning("Telegram FloodWait %s %ss — этот запрос пропускаю", label, wait)
                 raise
             except RPCError as exc:
                 name = type(exc).__name__.upper()
@@ -576,13 +586,13 @@ class ProfileScanner:
         """Только кому только что прилетел гифт. Диалоги/контакты — старые витрины."""
         enqueued = 0
         enqueued += await self._enqueue_seeds()
-        enqueued += await self._enqueue_recent_gift_recipients(dialogs=80, messages=30)
+        enqueued += await self._enqueue_recent_gift_recipients(dialogs=20, messages=10)
         enqueued += await self._enqueue_seed_chats()
         LOGGER.info("Очередь свежих гифтов: %s профилей", enqueued)
         return enqueued
 
     async def refresh_people_queue(self) -> int:
-        count = await self._enqueue_recent_gift_recipients(dialogs=50, messages=20)
+        count = await self._enqueue_recent_gift_recipients(dialogs=12, messages=8)
         LOGGER.info("Обновление свежих гифтов: +%s", count)
         return count
 
@@ -800,7 +810,13 @@ class ProfileScanner:
         stars_fetched = False
         stargifts_count: Optional[int] = None
         skip_until = self._full_skip_until.get(int(user.id), 0.0)
-        if skip_until > time.monotonic() or self._flood.cooling:
+        blocked = skip_until > time.monotonic()
+        if not blocked and self._flood.cooling:
+            left = self._flood.cool_until - time.monotonic()
+            if 0 < left <= 8:
+                await self._flood._sleep(left)
+            blocked = self._flood.cooling
+        if blocked:
             LOGGER.debug("GetFullUser %s: временно пропускаю (flood)", user.id)
         else:
             try:
@@ -811,7 +827,7 @@ class ProfileScanner:
                     request = GetFullUserRequest(input_user)  # type: ignore[call-arg]
                 full = await self._flood.call(
                     lambda: self.client(request),
-                    retries=1,
+                    retries=3,
                     label=f"full:{user.id}",
                 )
                 stars_fetched = True
